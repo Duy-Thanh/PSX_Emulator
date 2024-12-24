@@ -36,6 +36,21 @@ namespace PSX {
             GPU* gpu;
             GTE* gte;
 
+            // Add DMA control structure
+            struct DMAChannel {
+                uint32_t base_addr = 0;
+                uint32_t block_size = 0;
+                uint32_t control = 0;
+            };
+            std::array<DMAChannel, 7> dma_channels;
+
+            // Add missing I/O port functions
+            uint8_t ReadParallelPort(uint32_t address);
+            uint8_t ReadSerialPort(uint32_t address);
+            void WriteParallelPort(uint32_t address, uint8_t value);
+            void WriteSerialPort(uint32_t address, uint8_t value);
+            void WriteDMAControl(uint32_t channel, uint32_t value);
+
         public:
             Memory();
             ~Memory();

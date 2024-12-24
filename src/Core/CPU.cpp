@@ -383,4 +383,33 @@ namespace PSX {
             cpu->HI = dividend % divisor;
         }
     }
+
+    void R3000A_CPU::Op_MULTU(uint8_t rs, uint8_t rt) {
+        uint64_t result = (uint64_t)GetRegister(rs) * (uint64_t)GetRegister(rt);
+        cpu->LO = (uint32_t)result;
+        cpu->HI = (uint32_t)(result >> 32);
+    }
+
+    void R3000A_CPU::Op_DIVU(uint8_t rs, uint8_t rt) {
+        uint32_t dividend = GetRegister(rs);
+        uint32_t divisor = GetRegister(rt);
+        
+        if (divisor != 0) {
+            cpu->LO = dividend / divisor;
+            cpu->HI = dividend % divisor;
+        }
+    }
+
+    void R3000A_CPU::Op_MFHI(uint8_t rd) {
+        SetRegister(rd, cpu->HI);
+    }
+
+    void R3000A_CPU::Op_MFLO(uint8_t rd) {
+        SetRegister(rd, cpu->LO);
+    }
+
+    void R3000A_CPU::Op_XOR(uint8_t rd, uint8_t rs, uint8_t rt) {
+        uint32_t result = GetRegister(rs) ^ GetRegister(rt);
+        SetRegister(rd, result);
+    }
 }

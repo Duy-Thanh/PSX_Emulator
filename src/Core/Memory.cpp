@@ -285,8 +285,26 @@ namespace PSX {
                     }
                     break;
                     
-                // Add other DMA channels (MDEC, CD-ROM, etc.)
+                // Add other DMA channels (MDEC, CD-ROM, etc.) as needed
             }
         }
+    }
+
+    uint8_t Memory::ReadParallelPort(uint32_t address) {
+        // Stub implementation
+        return 0xFF;
+    }
+
+    uint8_t Memory::ReadSerialPort(uint32_t address) {
+        // Stub implementation
+        return 0xFF;
+    }
+
+    void Memory::WriteParallelPort(uint32_t address, uint8_t value) {
+        // Stub implementation
+    }
+
+    void Memory::WriteSerialPort(uint32_t address, uint8_t value) {
+        // Stub implementation
     }
 }

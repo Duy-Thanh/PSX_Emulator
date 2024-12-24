@@ -374,39 +374,32 @@ namespace PSX {
         // Draw upper triangle
         float x1 = vertices[0].x;
         float x2 = vertices[0].x;
-        float u1_current = vertices[0].u;
-        float v1_current = vertices[0].v;
-        float u2_current = vertices[0].u;
-        float v2_current = vertices[0].v;
+        float u_curr1 = vertices[0].u;
+        float v_curr1 = vertices[0].v;
+        float u_curr2 = vertices[0].u;
+        float v_curr2 = vertices[0].v;
 
-        // TODO: Implement actual texture sampling
-        // For now, just draw a colored triangle
         for (int y = vertices[0].y; y <= vertices[1].y; y++) {
             int start_x = std::min((int)x1, (int)x2);
             int end_x = std::max((int)x1, (int)x2);
 
             for (int x = start_x; x <= end_x; x++) {
-                // Calculate texture coordinates for current pixel
                 float t = (float)(x - start_x) / (end_x - start_x);
-                float u_current = u1_current + t * (u2_current - u1_current);
-                float v_current = v1_current + t * (v2_current - v1_current);
+                float u = u_curr1 + t * (u_curr2 - u_curr1);
+                float v = v_curr1 + t * (v_curr2 - v_curr1);
                 
-                // Sample texture
-                uint16_t texel = ReadVRAM((uint16_t)u_current, (uint16_t)v_current);
-                
-                // Apply texture blending with vertex colors
+                uint16_t texel = ReadVRAM((uint16_t)u, (uint16_t)v);
                 Color color = InterpolateColor(vertices[1].color, vertices[2].color, t);
                 uint16_t pixel = BlendTextureWithColor(texel, color);
-                
                 DrawPixel(x, y, pixel);
             }
 
             x1 += slope1;
             x2 += slope2;
-            u1_current += uslope1;
-            v1_current += vslope1;
-            u2_current += uslope2;
-            v2_current += vslope2;
+            u_curr1 += uslope1;
+            v_curr1 += vslope1;
+            u_curr2 += uslope2;
+            v_curr2 += vslope2;
         }
 
         // Draw lower triangle
@@ -414,8 +407,8 @@ namespace PSX {
         uslope1 = (float)(vertices[2].u - vertices[1].u) / (vertices[2].y - vertices[1].y);
         vslope1 = (float)(vertices[2].v - vertices[1].v) / (vertices[2].y - vertices[1].y);
         x1 = vertices[1].x;
-        u1_current = vertices[1].u;
-        v1_current = vertices[1].v;
+        u_curr1 = vertices[1].u;
+        v_curr1 = vertices[1].v;
 
         for (int y = vertices[1].y; y <= vertices[2].y; y++) {
             int start_x = std::min((int)x1, (int)x2);
@@ -423,18 +416,21 @@ namespace PSX {
 
             for (int x = start_x; x <= end_x; x++) {
                 float t = (float)(x - start_x) / (end_x - start_x);
+                float u = u_curr1 + t * (u_curr2 - u_curr1);
+                float v = v_curr1 + t * (v_curr2 - v_curr1);
+                
+                uint16_t texel = ReadVRAM((uint16_t)u, (uint16_t)v);
                 Color color = InterpolateColor(vertices[1].color, vertices[2].color, t);
-                uint16_t texel = ReadVRAM((uint16_t)u_current, (uint16_t)v_current);
                 uint16_t pixel = BlendTextureWithColor(texel, color);
                 DrawPixel(x, y, pixel);
             }
 
             x1 += slope1;
             x2 += slope2;
-            u1_current += uslope1;
-            v1_current += vslope1;
-            u2_current += uslope2;
-            v2_current += vslope2;
+            u_curr1 += uslope1;
+            v_curr1 += vslope1;
+            u_curr2 += uslope2;
+            v_curr2 += vslope2;
         }
     }
 
