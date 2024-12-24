@@ -11,21 +11,40 @@ namespace PSX {
     }
 
     void GPU::Reset() {
-        vram.fill(0);
+        // Clear command buffer using the new method
+        cmd_buffer.clear();
+        
+        // Reset status register to default value
         status = 0x14802000;
-        cmd_buffer.fill(0);
-        cmd_buffer_index = 0;
-        cmd_buffer_size = 0;
-
-        drawing_area_left = 0;
-        drawing_area_top = 0;
-        drawing_area_right = 0;
-        drawing_area_bottom = 0;
-
+        
+        // Reset display settings
         display_area_x = 0;
         display_area_y = 0;
         display_area_width = 640;
         display_area_height = 480;
+        
+        // Reset drawing area
+        drawing_area_left = 0;
+        drawing_area_top = 0;
+        drawing_area_right = 0;
+        drawing_area_bottom = 0;
+        
+        // Reset transfer state
+        transfer_x = 0;
+        transfer_y = 0;
+        transfer_width = 0;
+        transfer_height = 0;
+        
+        // Reset timing quirks
+        timing.command_cycles = 0;
+        timing.texture_cycles = 0;
+        timing.vram_cycles = 0;
+        timing.texture_cache_dirty = true;
+        
+        // Clear VRAM
+        vram.fill(0);
+        
+        busy = false;
     }
     uint32_t GPU::ReadGPUREAD() const {
         // TODO: Implement VRAM read functionality
@@ -33,86 +52,21 @@ namespace PSX {
     }
 
     void GPU::WriteGP0(uint32_t data) {
-        busy = true;  // Set busy flag when processing commands
-        
-        if (cmd_buffer_size == 0) {
-            // New command
+        if (cmd_buffer.size == 0) {
+            // New command, determine size based on command type
             uint8_t opcode = (data >> 24) & 0xFF;
-            switch (opcode) {
-                case 0x00:  // NOP
-                    break;
-                    
-                case 0x01:  // Clear Cache
-                    break;
-                    
-                case 0x02:  // Fill Rectangle
-                    cmd_buffer_size = 3;
-                    break;
-                    
-                case 0x28:  // Monochrome 4-point polygon
-                    cmd_buffer_size = 5;
-                    break;
-                    
-                case 0x2C:  // Textured 4-point polygon
-                    cmd_buffer_size = 9;
-                    break;
-                    
-                case 0x30:  // Shaded 3-point polygon
-                    cmd_buffer_size = 6;
-                    break;
-                    
-                case 0x38:  // Shaded 4-point polygon
-                    cmd_buffer_size = 8;
-                    break;
-                    
-                case 0xA0:  // Image Load
-                    cmd_buffer_size = 3;
-                    break;
-                    
-                case 0xC0:  // Image Store
-                    cmd_buffer_size = 3;
-                    break;
-                    
-                case 0xE1:  // Draw Mode setting
-                    status = (status & ~0x7FF) | (data & 0x7FF);
-                    break;
-                    
-                case 0xE2:  // Texture Window setting
-                    break;
-                    
-                case 0xE3:  // Drawing Area top left
-                    drawing_area_left = data & 0x3FF;
-                    drawing_area_top = (data >> 10) & 0x3FF;
-                    break;
-                    
-                case 0xE4:  // Drawing Area bottom right
-                    drawing_area_right = data & 0x3FF;
-                    drawing_area_bottom = (data >> 10) & 0x3FF;
-                    break;
-                    
-                case 0xE5:  // Drawing Offset
-                    break;
-                    
-                case 0xE6:  // Mask Bit setting
-                    status = (status & ~0x1000000) | ((data & 1) << 24);
-                    break;
-                    
-                default:
-                    std::cerr << "Unhandled GP0 command: 0x" << std::hex << (int)opcode << std::endl;
-                    break;
-            }
+            cmd_buffer.size = GetCommandSize(opcode);
+            cmd_buffer.position = 0;
         }
 
-        if (cmd_buffer_size > 0) {
-            cmd_buffer[cmd_buffer_index++] = data;
-            if (cmd_buffer_index >= cmd_buffer_size) {
-                ExecuteGP0Command();
-                cmd_buffer_index = 0;
-                cmd_buffer_size = 0;
-            }
-        }
+        // Store command data
+        cmd_buffer[cmd_buffer.position++] = data;
         
-        busy = false;  // Clear busy flag when done
+        // Execute if we have all parameters
+        if (cmd_buffer.position >= cmd_buffer.size) {
+            ExecuteGP0Command();
+            cmd_buffer.clear();
+        }
     }
 
     void GPU::WriteGP1(uint32_t command) {
@@ -125,9 +79,8 @@ namespace PSX {
                 Reset();
                 break;
                 
-            case 0x01:  // Reset Command Buffer
-                cmd_buffer_index = 0;
-                cmd_buffer_size = 0;
+            case 0x01:  // Reset command buffer
+                cmd_buffer.clear();
                 break;
                 
             case 0x02:  // Acknowledge IRQ
@@ -476,5 +429,25 @@ namespace PSX {
             return (pixel2 << 16) | pixel1;
         }
         return 0;
+    }
+
+    uint8_t GPU::GetCommandSize(uint8_t opcode) const {
+        // PS1 GPU Command sizes
+        switch (opcode) {
+            case 0x20: case 0x22: // Monochrome triangle
+                return 4;
+            case 0x24: case 0x25: case 0x26: // Textured triangle
+                return 7;
+            case 0x28: case 0x2A: // Monochrome quad
+                return 5;
+            case 0x2C: case 0x2D: case 0x2E: // Textured quad
+                return 9;
+            case 0xA0: // Image load
+                return 3;
+            case 0xC0: // Image store
+                return 3;
+            default:
+                return 1;
+        }
     }
 }

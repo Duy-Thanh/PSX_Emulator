@@ -4,12 +4,52 @@
 #include <string>
 #include <cstring>
 #include <array>
+
 #include "GPU.h"
 #include "GTE.h"
+#include "SPU.h"
+#include "CDROM.h"
 
 namespace PSX {
     class Memory {
         private:
+            // DMA target enum definition
+            enum DMATarget {
+                DMA_MDEC_IN,
+                DMA_MDEC_OUT,
+                DMA_GPU,
+                DMA_CDROM,
+                DMA_SPU,
+                DMA_PIO
+            };
+
+            struct DMAChannel {
+                uint32_t base_addr;
+                uint32_t block_size;
+                uint32_t control;
+                bool active;
+                DMATarget target;
+                uint32_t chop_size;    // Size of each chopped block
+                uint32_t chop_count;   // Number of chops performed
+                uint32_t chop_dma;     // DMA timing between chops
+                uint32_t chop_cpu;     // CPU timing between chops
+            };
+
+            // Hardware components (moved to single location)
+            GPU* gpu;
+            GTE* gte;
+            SPU* spu;
+            CDROM* cdrom;
+
+            // Memory timing structure (single definition)
+            struct MemoryTiming {
+                uint32_t access_cycles;
+                uint32_t dma_cycles;
+                uint32_t gpu_cycles;
+                uint32_t spu_cycles;
+                uint32_t cdrom_cycles;
+            } timing;
+
             // Memory arrays
             std::array<uint8_t, 2 * 1024 * 1024> ram;    // 2MB RAM
             std::array<uint8_t, 512 * 1024> bios;        // 512KB BIOS
@@ -48,29 +88,18 @@ namespace PSX {
             // PS1 Quirk: Cache control registers
             static constexpr uint32_t CACHE_CONTROL = 0xFFFE0130;
 
-            // Hardware components
-            GPU* gpu;
-            GTE* gte;
-
-            // DMA channels
-            struct DMAChannel {
-                uint32_t base_addr = 0;    // Base address for transfer
-                uint32_t block_size = 0;   // Block size/count
-                uint32_t control = 0;      // Control register
-                bool active = false;       // Transfer active flag
-            };
-            std::array<DMAChannel, 7> dma_channels;  // PSX has 7 DMA channels
-
             // Interrupt registers
-            uint32_t interrupt_stat = 0;  // I_STAT - Interrupt status
-            uint32_t interrupt_mask = 0;  // I_MASK - Interrupt mask
+            uint32_t interrupt_stat;
+            uint32_t interrupt_mask;
+            bool irq_pending;       // Added: Track pending interrupts
 
             // Cache control
-            bool cache_enabled = false;
-            bool cache_isolated = false;
-            std::array<bool, 64> cache_locked;  // Cache line lock status
-            std::array<bool, 64> cache_valid;   // Cache line validity
-            std::array<uint32_t, 64> cache_tags;  // Cache line tags
+            bool cache_enabled;
+            bool cache_isolated;
+            bool scratchpad_enabled;
+            std::array<bool, 64> cache_valid;
+            std::array<bool, 64> cache_locked;
+            std::array<uint32_t, 64> cache_tags;
             bool dma_active = false;
 
             // CD-ROM status
@@ -127,6 +156,65 @@ namespace PSX {
             uint16_t spu_status = 0;
             uint16_t spu_control = 0;
 
+            // PS1 Quirk: Separate instruction and data cache states
+            struct CacheControl {
+                bool i_cache_enabled;
+                bool d_cache_enabled;
+                bool scratchpad_enabled;
+                bool cache_isolated;
+                std::array<bool, 64> locked_lines;
+            } cache_ctrl;
+
+            // PS1 Quirk: Cache tag layout
+            struct CacheTag {
+                uint32_t tag;
+                bool valid;
+                bool dirty;
+            };
+            std::array<CacheTag, 64> i_cache_tags;
+            std::array<CacheTag, 64> d_cache_tags;
+
+            // PS1 Quirk: Memory control registers
+            struct {
+                uint32_t exp1_base;
+                uint32_t exp2_base;
+                uint32_t exp1_delay;
+                uint32_t exp3_delay;
+                uint32_t bios_rom_delay;
+                uint32_t spu_delay;
+                uint32_t cdrom_delay;
+                uint32_t exp2_delay;
+            } mem_control;
+
+            // PS1 Quirk: Additional hardware registers
+            uint32_t ram_size;    // RAM Size Register (Read-only)
+            //uint32_t cache_ctrl;  // Cache Control Register
+            uint32_t dma_irq;    // DMA Interrupt Register
+
+            // PS1 Quirk: Cache line states
+            struct CacheLine {
+                bool valid;
+                bool dirty;
+                bool locked;
+                uint32_t tag;
+                std::array<uint8_t, 16> data;
+            };
+            std::array<CacheLine, 64> i_cache;
+            std::array<CacheLine, 64> d_cache;
+
+            // PS1 Quirk: Memory access states
+            struct MemoryState {
+                bool dma_active;
+                bool memory_busy;
+                uint8_t access_cycles;
+                uint32_t last_access;
+            } mem_state;
+
+            // DMA Channels array (7 channels for PS1)
+            std::array<DMAChannel, 7> dma_channels;
+
+            void UpdateTiming();
+
         public:
             Memory();
             ~Memory();
@@ -158,6 +246,8 @@ namespace PSX {
             // Hardware attachment
             void AttachGPU(GPU* gpu) { this->gpu = gpu; }
             void AttachGTE(GTE* gte) { this->gte = gte; }
+            void AttachSPU(SPU* spu) { this->spu = spu; }
+            void AttachCDROM(CDROM* cdrom) { this->cdrom = cdrom; }
 
             // DMA control
             void SetDMABaseAddr(uint32_t channel, uint32_t addr);

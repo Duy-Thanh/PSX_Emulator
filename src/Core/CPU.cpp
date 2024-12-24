@@ -63,29 +63,22 @@ namespace PSX {
     }
 
     void R3000A_CPU::Step() {
-        // PS1 Quirk: Pipeline timing
-        static int pipeline_stage = 0;
+        // PS1 Quirk: Enhanced instruction execution with all quirks
+        UpdatePipeline();
+        HandleCacheIsolation();
         
-        switch (pipeline_stage) {
-            case 0:  // Fetch
-                current_instruction = FetchInstruction();
-                if (memory->IsBusy()) {
-                    return;  // Memory busy, stall pipeline
-                }
-                pipeline_stage++;
-                break;
-                
-            case 1:  // Decode
-                if (branch_delay.active || load_delay.active) {
-                    // PS1 Quirk: Special handling for delay slots
-                    HandleDelaySlot();
-                }
-                DecodeAndExecute(current_instruction);
-                pipeline_stage = 0;
-                break;
+        if (CheckBreakpoints()) return;
+        
+        uint32_t instruction = FetchInstruction();
+        
+        // PS1 Quirk: Load delay handling
+        if (load_delay.active) {
+            SetRegister(load_delay.reg, load_delay.value);
+            load_delay.active = false;
         }
         
-        // PS1 Quirk: Memory access timing
+        DecodeAndExecute(instruction);
+        HandleDelaySlot();
         UpdateMemoryTiming();
     }
 
@@ -94,15 +87,26 @@ namespace PSX {
     }
 
     void R3000A_CPU::DecodeAndExecute(uint32_t instruction) {
-        // PS1 Quirk: Instructions in isolated cache are executed even when cache is disabled
-        if (memory->IsCacheIsolated()) {
-            // Execute from isolated cache
-            instruction = memory->ReadCacheIsolated(cpu->PC);
+        // PS1 Quirk: Load delay slot behavior
+        if (load_delay.active) {
+            if (load_delay.reg != 0) {  // R0 is always zero
+                SetRegister(load_delay.reg, load_delay.value);
+            }
+            load_delay.active = false;
         }
-        
+
+        // PS1 Quirk: Branch delay slot behavior
+        if (branch_delay.active) {
+            // Execute instruction in branch delay slot
+            uint32_t next_instruction = FetchInstruction();
+            DecodeAndExecute(next_instruction);
+            cpu->PC = branch_delay.target;
+            branch_delay.active = false;
+            return;
+        }
+
         // PS1 Quirk: Coprocessor instructions execute even when disabled
         if ((instruction & 0xF0000000) == 0x40000000) {
-            // Always execute COP0 instructions
             ExecuteCOP0(instruction);
             return;
         }
@@ -563,26 +567,37 @@ namespace PSX {
     }
 
     void R3000A_CPU::HandleException(uint32_t excode) {
-        // PS1 quirk: Exception handling in branch delay slots
-        if (branch_delay.active) {
-            cop0.EPC = cpu->PC - 4;  // Point to branch instruction
-            cop0.CAUSE |= (1 << 31); // Set BD (Branch Delay) bit
-        } else {
-            cop0.EPC = cpu->PC - 4;
+        // PS1 Quirk: Exception during exception handling
+        if (cop0.SR & (1 << SR_EXL)) {  // EXL bit set
+            // Triple fault - should reset the system
+            Reset();
+            return;
         }
 
-        // PS1 specific: Status register handling
-        uint32_t mode = cop0.SR & 0x3F;  // Save current mode
-        cop0.SR &= ~0x3F;                // Clear mode bits
-        cop0.SR |= (mode << 2);          // Shift mode bits
-        
+        // PS1 Quirk: Exception in branch delay slot
+        if (pipeline.delay_slot) {
+            cop0.EPC = pipeline.current_pc - 4;
+            cop0.CAUSE |= (1 << CAUSE_BD);  // Set BD bit
+        } else {
+            cop0.EPC = pipeline.current_pc;
+        }
+
+        // Update Cause register with exception code
         cop0.CAUSE = (cop0.CAUSE & ~0x7C) | (excode << 2);
+
+        // PS1 Quirk: Exception vector selection based on BEV bit
+        bool bev = cop0.SR & (1 << SR_BEV);
+        pipeline.next_pc = bev ? EXCEPTION_VECTOR_BEV1 : EXCEPTION_VECTOR_BEV0;
+
+        // PS1 Quirk: Status register update
+        // Save current interrupt mask and mode bits
+        cop0.SR = (cop0.SR & ~0x3F) | ((cop0.SR & 0xF) << 2);
         
-        // PS1 quirk: Always jump to fixed exception vector
-        cpu->PC = 0x80000080;
-        
-        // Clear delay slots
-        load_delay.active = false;
+        // Set Exception Level bit
+        cop0.SR |= (1 << SR_EXL);
+
+        // Clear branch delay state since we're handling the exception
+        pipeline.delay_slot = false;
         branch_delay.active = false;
     }
 
@@ -804,5 +819,48 @@ namespace PSX {
             case 14: cop0.EPC = value; break;
             // PRID is read-only
         }
+    }
+
+    void R3000A_CPU::HandleCacheIsolation() {
+        if (cache_state.cache_isolated) {
+            // PS1 Quirk: When cache is isolated, memory accesses go to I-cache
+            uint32_t cache_line = (pipeline.current_pc >> 4) & 0x3F;
+            uint32_t offset = (pipeline.current_pc >> 2) & 3;
+            // ... handle cache isolation logic ...
+        }
+    }
+
+    void R3000A_CPU::HandleScratchpadAccess() {
+        // PS1 Quirk: Scratchpad access timing and behavior
+        if (cache_state.scratchpad_enabled) {
+            // ... handle scratchpad access ...
+        }
+    }
+
+    void R3000A_CPU::UpdatePipeline() {
+        // PS1 Quirk: Pipeline state updates
+        pipeline.current_pc = pipeline.next_pc;
+        pipeline.next_pc += 4;
+
+        // PS1 Quirk: Pipeline stalls
+        if (pipeline.cache_miss) {
+            pipeline.stall_cycles += 3;  // Cache miss penalty
+        }
+
+        // PS1 Quirk: Branch prediction
+        if (branch_delay.active && branch_delay.predicted) {
+            pipeline.next_pc = branch_delay.target;
+        }
+    }
+
+    bool R3000A_CPU::CheckBreakpoints() {
+        // PS1 Quirk: Hardware breakpoint checking
+        if (cop0.DCIC & 0x80000000) {  // Debug mode enabled
+            if ((pipeline.current_pc & cop0.BPCM) == (cop0.BPC & cop0.BPCM)) {
+                HandleException(EXCEPTION_BP);
+                return true;
+            }
+        }
+        return false;
     }
 }

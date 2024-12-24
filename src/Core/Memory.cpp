@@ -74,14 +74,14 @@ namespace PSX {
     }
 
     uint32_t Memory::TranslateAddress(uint32_t address) {
-        // PS1 Quirk: Memory segment translation
+        // PS1 Quirk: KUSEG/KSEG0/KSEG1 address translation
         if (address >= KSEG1_START) {
-            return address - KSEG1_START;  // Strip segment bits for KSEG1 (uncached)
+            address -= KSEG1_START;
         } else if (address >= KSEG0_START) {
-            return address - KSEG0_START;  // Strip segment bits for KSEG0 (cached)
+            address -= KSEG0_START;
         }
-        
-        // PS1 Quirk: Memory mirroring
+
+        // PS1 Quirk: RAM mirroring
         if (address < RAM_SIZE) {
             return address & RAM_MASK;
         } else if (address >= BIOS_START && address < (BIOS_START + BIOS_SIZE)) {
@@ -128,6 +128,14 @@ namespace PSX {
     }
 
     uint32_t Memory::Read32(uint32_t address) {
+        // PS1 Quirk: Unaligned reads wrap within the same word
+        if (address & 3) {
+            uint32_t aligned = address & ~3;
+            uint32_t shift = (address & 3) * 8;
+            uint32_t data = Read32(aligned);
+            return (data >> shift) | (data << (32 - shift));  // Rotates within word!
+        }
+        
         // PS1 Quirk: Memory wrapping
         address &= 0x1FFFFFFF;
         
@@ -212,25 +220,58 @@ namespace PSX {
     }
 
     void Memory::Write32(uint32_t address, uint32_t value) {
-        // PS1 Quirk: Cache control register
-        if (address == CACHE_CTRL) {
-            if (value & 0x800) {
-                cache_enabled = true;
-            }
-            if (value & 0x4) {
-                // Cache invalidation
-                std::fill(cache_valid.begin(), cache_valid.end(), false);
-                std::fill(icache.begin(), icache.end(), 0);
-            }
-            return;
+        // PS1 Quirk: Memory mirroring in KUSEG/KSEG0/KSEG1
+        address = TranslateAddress(address);
+
+        // PS1 Quirk: Unaligned writes rotate the data within the word
+        if (address & 3) {
+            uint32_t aligned = address & ~3;
+            uint32_t shift = (address & 3) * 8;
+            value = (value >> shift) | (value << (32 - shift));
+            address = aligned;
         }
-        
+
         // PS1 Quirk: DMA register auto-acknowledgment
         if (address >= 0x1F801080 && address < 0x1F801100) {
             uint32_t channel = (address >> 4) & 0x7;
             if ((address & 0xF) == 0x8) {  // Control register
                 WriteDMAControl(channel, value);
                 return;
+            }
+        }
+
+        // PS1 Quirk: Cache coherency
+        if (cache_enabled && !cache_isolated) {
+            uint32_t line = (address >> 4) & 0x3F;
+            if (cache_valid[line] && !cache_locked[line]) {
+                cache_valid[line] = false;
+            }
+        }
+
+        // PS1 Quirk: Writes to KSEG2 when cache is isolated go to I-cache
+        if (cache_isolated && (address >= KSEG2_START)) {
+            uint32_t cache_addr = address & 0x3FF;
+            uint32_t* cache_ptr = (uint32_t*)&icache[cache_addr & ~3];
+            *cache_ptr = value;
+            return;
+        }
+        
+        // PS1 Quirk: Memory mirroring
+        address = TranslateAddress(address);
+        
+        // PS1 Quirk: Unaligned writes are handled by rotating the data
+        if (address & 3) {
+            uint32_t aligned = address & ~3;
+            uint32_t shift = (address & 3) * 8;
+            value = (value >> shift) | (value << (32 - shift));
+            address = aligned;
+        }
+        
+        // PS1 Quirk: Cache coherency only affects data cache, not instruction cache
+        if (cache_enabled && !cache_isolated) {
+            uint32_t line = (address >> 4) & 0x3F;
+            if (cache_valid[line] && !cache_locked[line]) {
+                cache_valid[line] = false;  // Invalidate but don't update
             }
         }
         
@@ -321,14 +362,61 @@ namespace PSX {
     }
 
     uint32_t Memory::ReadIO32(uint32_t address) {
-        switch (address) {
-            case 0x1F801070:  // I_STAT - Interrupt status
-                return interrupt_stat;
-            case 0x1F801074:  // I_MASK - Interrupt mask
-                return interrupt_mask;
-            // ... existing GPU and other cases ...
+        // PS1 Quirk: Memory control register mirroring
+        if (address >= 0x1F801000 && address < 0x1F801024) {
+            address = 0x1F801000 + (address & 0x23);
         }
-        return (ReadIO16(address) | (ReadIO16(address + 2) << 16));
+
+        // PS1 Quirk: SPU register access timing
+        if (address >= 0x1F801C00 && address < 0x1F802000) {
+            mem_state.access_cycles += 1;  // SPU access takes extra cycles
+        }
+
+        // PS1 Quirk: CDROM register status bits
+        if (address == 0x1F801800) {
+            uint8_t status = 0;
+            if (cdrom_busy) status |= 0x80;
+            if (cdrom_seeking) status |= 0x40;
+            return status;
+        }
+
+        // Handle different IO register ranges
+        if (address >= 0x1F801000 && address < 0x1F802000) {
+            switch (address) {
+                case 0x1F801810: // GPU DATA
+                    return gpu ? gpu->ReadGPUREAD() : 0;
+                    
+                case 0x1F801814: // GPU STATUS
+                    return gpu ? gpu->ReadGPUSTAT() : 0;
+
+                case 0x1F801824: // DMA Control Register
+                    return dma_irq;
+
+                // Memory Control registers
+                case 0x1F801000: return mem_control.exp1_base;
+                case 0x1F801004: return mem_control.exp2_base;
+                case 0x1F801008: return mem_control.exp1_delay;
+                case 0x1F80100C: return mem_control.exp3_delay;
+                case 0x1F801010: return mem_control.bios_rom_delay;
+                case 0x1F801014: return mem_control.spu_delay;
+                case 0x1F801018: return mem_control.cdrom_delay;
+                case 0x1F80101C: return mem_control.exp2_delay;
+
+                // DMA Registers
+                case 0x1F8010F0: // DMA Control
+                    return dma_channels[0].control;
+                case 0x1F8010F4: // DMA Interrupt Register
+                    return dma_irq;
+
+                // Other hardware registers...
+                default:
+                    std::cerr << "Unhandled I/O read at address: 0x" << std::hex << address << std::endl;
+                    return 0;
+            }
+        }
+
+        // Return 0 for unhandled addresses
+        return 0;
     }
 
     void Memory::WriteIO16(uint32_t address, uint16_t value) {
@@ -543,42 +631,33 @@ namespace PSX {
 
     void Memory::HandleDMATransfer(uint32_t channel) {
         auto& dma = dma_channels[channel];
-        
-        // PS1 Quirk: DMA timing and choking
-        switch (channel) {
-            case 2:  // GPU
-                if (!gpu->IsReadyForDMA()) {
-                    return;  // GPU busy, try again later
-                }
-                break;
-                
-            case 3:  // CDROM
-                if (cdrom_seeking || !cdrom_sector_ready) {
-                    return;  // CD not ready
-                }
-                break;
-                
-            case 4:  // SPU
-                if (spu_busy) {
-                    return;  // SPU busy
-                }
-                break;
+
+        // PS1 Quirk: DMA choking behavior
+        if (dma.chop_size > 0) {
+            uint32_t chop_blocks = std::min(dma.block_size, dma.chop_size);
+            dma.chop_count++;
+            
+            if (dma.chop_count >= dma.control & 0x7) {
+                // Pause DMA for other devices
+                dma.active = false;
+                return;
+            }
         }
-        
-        // PS1 Quirk: DMA transfer modes
-        uint32_t mode = (dma.control >> 9) & 3;
-        switch (mode) {
-            case 0:  // Block transfer
-                HandleBlockDMA(channel);
-                break;
-                
-            case 1:  // Linked list transfer
-                HandleLinkedListDMA(channel);
-                break;
-                
-            case 2:  // Chain transfer
-                HandleChainDMA(channel);
-                break;
+
+        // PS1 Quirk: DMA to GPU must respect GPU ready state
+        if (channel == 2 && gpu) {  // GPU DMA
+            if (!gpu->IsReadyForDMA()) {
+                return;  // Try again next cycle
+            }
+        }
+
+        // PS1 Quirk: DMA linked list termination
+        if ((dma.control & 0x6) == 0x4) {  // Linked list mode
+            uint32_t header = Read32(dma.base_addr);
+            if (header & 0x800000) {
+                dma.active = false;  // End of linked list
+                return;
+            }
         }
     }
 
@@ -677,5 +756,33 @@ namespace PSX {
         
         // Return the word from isolated cache
         return *(uint32_t*)&icache[line * 16 + offset * 4];
+    }
+
+    void Memory::UpdateTiming() {
+        // Update component timings
+        if (gpu && gpu->IsBusy()) {
+            timing.gpu_cycles++;
+        }
+        
+        if (spu && spu->IsTransferring()) {
+            timing.spu_cycles++;
+        }
+        
+        if (cdrom && cdrom->IsReading()) {
+            timing.cdrom_cycles++;
+        }
+        
+        // Handle DMA timing
+        for (auto& channel : dma_channels) {
+            if (channel.active) {
+                timing.dma_cycles++;
+                // Apply proper wait states based on target
+                switch (channel.target) {
+                    case DMA_GPU: timing.gpu_cycles++; break;
+                    case DMA_SPU: timing.spu_cycles++; break;
+                    case DMA_CDROM: timing.cdrom_cycles++; break;
+                }
+            }
+        }
     }
 }

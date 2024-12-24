@@ -106,14 +106,6 @@ namespace PSX {
             GPU* gpu;
             GTE* gte;
 
-            // Add missing CPU control registers
-            struct COP0 {
-                uint32_t SR;      // Status Register
-                uint32_t CAUSE;   // Cause Register
-                uint32_t EPC;     // Exception Program Counter
-                uint32_t PRID;    // Processor ID
-            } cop0;
-
             // Add interrupt handling
             void HandleInterrupt();
             void HandleException(uint32_t excode);
@@ -140,19 +132,67 @@ namespace PSX {
             static constexpr uint32_t EXCEPTION_CPU    = 11;  // Coprocessor unusable
             static constexpr uint32_t EXCEPTION_OV     = 12;  // Arithmetic overflow
 
-            // Load delay slot handling
-            struct {
+            // PS1 Quirk: Load delay slot handling (merged version)
+            struct LoadDelay {
                 uint8_t reg;
                 uint32_t value;
                 uint32_t old_value;
                 bool active;
+                bool is_load_linked;    // For LL/SC instructions
+                uint32_t linked_address;
             } load_delay;
 
-            // Branch delay slot handling
-            struct {
+            // PS1 Quirk: Branch delay with prediction (merged version)
+            struct BranchDelay {
                 uint32_t target;
                 bool active;
+                bool predicted;
+                uint32_t source_pc;
+                bool is_likely;         // For branch likely instructions
+                uint8_t branch_type;    // Track type of branch for timing
             } branch_delay;
+
+            // PS1 Quirk: COP0 state with detailed fields (merged version)
+            struct COP0State {
+                uint32_t SR;           // Status Register
+                uint32_t CAUSE;        // Cause Register
+                uint32_t EPC;          // Exception Program Counter
+                uint32_t PRID;         // Processor ID
+                uint32_t BadVAddr;     // Bad Virtual Address
+                uint32_t DCIC;         // Debug and Cache Isolation Control
+                uint32_t BPC;          // Breakpoint PC
+                uint32_t BDA;          // Breakpoint Data Address
+                uint32_t JUMPDEST;     // Jump Destination
+                uint32_t BDAM;         // Data Address Breakpoint Mask
+                uint32_t BPCM;         // PC Breakpoint Mask
+            } cop0;
+
+            // PS1 Quirk: Pipeline state tracking
+            struct Pipeline {
+                uint32_t current_pc;
+                uint32_t next_pc;
+                bool branch_taken;
+                bool delay_slot;
+                bool cache_miss;
+                uint32_t stall_cycles;
+                bool in_exception;
+                bool in_interrupt;
+                uint32_t last_branch_target;
+                uint8_t branch_likely_mode;
+            } pipeline;
+
+            // PS1 Quirk: Cache state tracking
+            struct CacheState {
+                bool icache_enabled;
+                bool dcache_enabled;
+                bool cache_isolated;
+                uint32_t last_tag;
+                bool last_hit;
+                uint8_t refill_counter;
+                uint32_t line_state[64];  // Track state of each cache line
+                bool scratchpad_enabled;
+                uint32_t cache_control;
+            } cache_state;
 
             // Add these declarations
             void Op_LB(uint8_t rt, uint8_t rs, uint16_t offset);
@@ -165,8 +205,6 @@ namespace PSX {
             uint32_t current_instruction;
             
             // Add missing method declarations
-            void HandleDelaySlot();
-            void UpdateMemoryTiming();
             void ExecuteCOP0(uint32_t instruction);
             
             // Add missing operation declarations
@@ -177,6 +215,19 @@ namespace PSX {
             // COP0 helper functions
             uint32_t GetCOP0Register(uint8_t reg) const;
             void SetCOP0Register(uint8_t reg, uint32_t value);
+
+            // PS1 Exception Vector addresses
+            static constexpr uint32_t EXCEPTION_VECTOR_BEV0 = 0x80000080;
+            static constexpr uint32_t EXCEPTION_VECTOR_BEV1 = 0xBFC00180;
+
+            // PS1 Status Register bit positions
+            static constexpr uint32_t SR_BEV = 22;  // Boot Exception Vector
+            static constexpr uint32_t SR_EXL = 1;   // Exception Level
+            static constexpr uint32_t SR_IE = 0;    // Interrupt Enable
+
+            // PS1 Cause Register bit positions
+            static constexpr uint32_t CAUSE_BD = 31;  // Branch Delay slot
+
         public:
             R3000A_CPU();
             ~R3000A_CPU();
@@ -197,5 +248,15 @@ namespace PSX {
             void SetPC(uint32_t PC) {
                 this->cpu->PC = PC;
             }
+
+            // Add new methods for handling PS1-specific behaviors
+            void HandleCacheIsolation();
+            void HandleScratchpadAccess();
+            void UpdatePipeline();
+            bool CheckBreakpoints();
+            void HandleDelaySlot();
+            void UpdateMemoryTiming();
+            bool IsInDelaySlot() const { return pipeline.delay_slot; }
+            bool IsCacheIsolated() const { return cache_state.cache_isolated; }
     };
 }
