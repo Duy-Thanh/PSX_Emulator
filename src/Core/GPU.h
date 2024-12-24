@@ -89,5 +89,9 @@ namespace PSX {
         void DMAOut(uint32_t* data, uint32_t count);
 
         bool IsBusy() const { return busy; }
+
+        bool IsReadyForDMA() const {
+            return !IsBusy();  // For now, just use the existing IsBusy check
+        }
     };
 }

@@ -14,6 +14,7 @@ namespace PSX {
             std::array<uint8_t, 2 * 1024 * 1024> ram;    // 2MB RAM
             std::array<uint8_t, 512 * 1024> bios;        // 512KB BIOS
             std::array<uint8_t, 1024> scratchpad;        // 1KB Scratchpad
+            std::array<uint8_t, 64 * 16> icache;         // 64 cache lines * 16 bytes per line
 
             // Memory map constants
             static constexpr uint32_t KUSEG_START = 0x00000000;  // User virtual memory
@@ -39,6 +40,14 @@ namespace PSX {
             static constexpr uint32_t EXP2_BASE = 0x1F802000;
             static constexpr uint32_t CACHE_CTRL = 0xFFFE0130;
 
+            // PS1 Quirk: Memory mirroring masks
+            static constexpr uint32_t RAM_MIRROR_MASK = 0x1FFFFF;
+            static constexpr uint32_t SCRATCHPAD_MIRROR_MASK = 0x3FF;
+            static constexpr uint32_t BIOS_MIRROR_MASK = 0x7FFFF;
+
+            // PS1 Quirk: Cache control registers
+            static constexpr uint32_t CACHE_CONTROL = 0xFFFE0130;
+
             // Hardware components
             GPU* gpu;
             GTE* gte;
@@ -58,14 +67,27 @@ namespace PSX {
 
             // Cache control
             bool cache_enabled = false;
-            std::array<uint8_t, 1024> icache;  // 1KB Instruction Cache
-            std::array<uint32_t, 64> cache_tags;  // Cache tags
-            std::array<bool, 64> cache_valid;  // Cache line validity
+            bool cache_isolated = false;
+            std::array<bool, 64> cache_locked;  // Cache line lock status
+            std::array<bool, 64> cache_valid;   // Cache line validity
+            std::array<uint32_t, 64> cache_tags;  // Cache line tags
+            bool dma_active = false;
+
+            // CD-ROM status
+            bool cdrom_seeking = false;
+            bool cdrom_sector_ready = false;
+            
+            // DMA handlers
+            void HandleBlockDMA(uint32_t channel);
+            void HandleLinkedListDMA(uint32_t channel);
+            void HandleChainDMA(uint32_t channel);
+            
+            // Cache management
+            void UpdateCache(uint32_t address);
+            bool IsCacheable(uint32_t address) const;
 
             // Internal functions
             uint32_t TranslateAddress(uint32_t address);
-            bool IsCacheable(uint32_t address);
-            void UpdateCache(uint32_t address);
 
             // I/O functions
             uint8_t ReadParallelPort(uint32_t address);
@@ -172,5 +194,17 @@ namespace PSX {
             void SetMDECBusy(bool busy) { mdec_busy = busy; }
             bool IsSPUBusy() const { return spu_busy; }
             void SetSPUBusy(bool busy) { spu_busy = busy; }
+
+            bool IsBusy() const { 
+                return gpu->IsBusy() || IsCDROMBusy() || IsSPUBusy() || IsMDECBusy(); 
+            }
+            
+            bool IsCacheIsolated() const { return cache_isolated; }
+            uint32_t ReadCacheIsolated(uint32_t address) const;
+
+            // Add GPU DMA status check
+            bool IsReadyForDMA() const {
+                return gpu && !gpu->IsBusy();
+            }
     };
 }

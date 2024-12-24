@@ -63,47 +63,30 @@ namespace PSX {
     }
 
     void R3000A_CPU::Step() {
-        // PS1 Quirk: Handle load delay slots
-        uint32_t old_load_reg = load_delay.reg;
-        uint32_t old_load_value = load_delay.value;
-        bool had_load = load_delay.active;
+        // PS1 Quirk: Pipeline timing
+        static int pipeline_stage = 0;
         
-        load_delay.active = false;  // Clear for next instruction
-        
-        // PS1 Quirk: Save current PC for exception handling
-        uint32_t current_pc = cpu->PC;
-        
-        // Fetch and execute next instruction
-        uint32_t instr = FetchInstruction();
-        
-        // PS1 Quirk: Handle exceptions in delay slots
-        bool in_delay_slot = branch_delay.active;
-        
-        try {
-            DecodeAndExecute(instr);
-        } catch (const std::exception&) {
-            // PS1 Quirk: Exception in delay slot handling
-            if (in_delay_slot) {
-                cop0.EPC = current_pc - 4;  // Point to branch instruction
-                cop0.CAUSE |= (1 << 31);    // Set BD (Branch Delay) bit
-            } else {
-                cop0.EPC = current_pc;
-            }
-            throw;  // Re-throw the exception
+        switch (pipeline_stage) {
+            case 0:  // Fetch
+                current_instruction = FetchInstruction();
+                if (memory->IsBusy()) {
+                    return;  // Memory busy, stall pipeline
+                }
+                pipeline_stage++;
+                break;
+                
+            case 1:  // Decode
+                if (branch_delay.active || load_delay.active) {
+                    // PS1 Quirk: Special handling for delay slots
+                    HandleDelaySlot();
+                }
+                DecodeAndExecute(current_instruction);
+                pipeline_stage = 0;
+                break;
         }
         
-        // PS1 Quirk: Apply load delay after executing delay slot
-        if (had_load) {
-            SetRegister(old_load_reg, old_load_value);
-        }
-        
-        // PS1 Quirk: Handle branch delay slots
-        if (branch_delay.active) {
-            cpu->PC = branch_delay.target;
-            branch_delay.active = false;
-        } else {
-            cpu->PC += 4;
-        }
+        // PS1 Quirk: Memory access timing
+        UpdateMemoryTiming();
     }
 
     uint32_t R3000A_CPU::FetchInstruction() {
@@ -111,6 +94,19 @@ namespace PSX {
     }
 
     void R3000A_CPU::DecodeAndExecute(uint32_t instruction) {
+        // PS1 Quirk: Instructions in isolated cache are executed even when cache is disabled
+        if (memory->IsCacheIsolated()) {
+            // Execute from isolated cache
+            instruction = memory->ReadCacheIsolated(cpu->PC);
+        }
+        
+        // PS1 Quirk: Coprocessor instructions execute even when disabled
+        if ((instruction & 0xF0000000) == 0x40000000) {
+            // Always execute COP0 instructions
+            ExecuteCOP0(instruction);
+            return;
+        }
+        
         // PS1 Quirk: NOP instruction (0x00000000) must be handled specially
         if (instruction == 0) {
             return;  // True NOP, do nothing
@@ -185,6 +181,38 @@ namespace PSX {
             
             case 0x2B:  // SW
                 Op_SW(instr.i.rt, instr.i.rs, instr.i.immediate);
+                break;
+            
+            case 0x20:  // LB
+                Op_LB(instr.i.rt, instr.i.rs, instr.i.immediate);
+                break;
+            
+            case 0x24:  // LBU
+                Op_LBU(instr.i.rt, instr.i.rs, instr.i.immediate);
+                break;
+            
+            case 0x25:  // LHU
+                Op_LHU(instr.i.rt, instr.i.rs, instr.i.immediate);
+                break;
+            
+            case 0x28:  // SB
+                Op_SB(instr.i.rt, instr.i.rs, instr.i.immediate);
+                break;
+            
+            case 0x29:  // SH
+                Op_SH(instr.i.rt, instr.i.rs, instr.i.immediate);
+                break;
+            
+            case 0x03:  // JAL (corrected opcode)
+                Op_JAL(instr.j.target);
+                break;
+            
+            case 0x07:  // BGTZ
+                Op_BGTZ(instr.i.rs, instr.i.immediate);
+                break;
+            
+            case 0x06:  // BLEZ
+                Op_BLEZ(instr.i.rs, instr.i.immediate);
                 break;
             
             default:
@@ -650,7 +678,7 @@ namespace PSX {
     void R3000A_CPU::Op_LHU(uint8_t rt, uint8_t rs, uint16_t offset) {
         uint32_t addr = GetRegister(rs) + (int16_t)offset;
         
-        // PS1 Quirk: Unaligned halfword access
+        // PS1 Quirk: Unaligned halfword access causes exception
         if (addr & 1) {
             HandleException(EXCEPTION_ADEL);
             return;
@@ -666,12 +694,13 @@ namespace PSX {
     void R3000A_CPU::Op_SH(uint8_t rt, uint8_t rs, uint16_t offset) {
         uint32_t addr = GetRegister(rs) + (int16_t)offset;
         
-        // PS1 Quirk: Unaligned halfword access
+        // PS1 Quirk: Unaligned halfword access causes exception
         if (addr & 1) {
             HandleException(EXCEPTION_ADES);
             return;
         }
         
+        // PS1 Quirk: Store uses current register value, not delayed
         memory->Write16(addr, GetRegister(rt) & 0xFFFF);
     }
 
@@ -681,6 +710,99 @@ namespace PSX {
             int32_t signExtOffset = (int16_t)offset;
             branch_delay.target = cpu->PC + (signExtOffset << 2);
             branch_delay.active = true;
+        }
+    }
+
+    void R3000A_CPU::HandleDelaySlot() {
+        if (branch_delay.active) {
+            // Execute instruction in branch delay slot
+            uint32_t next_instruction = FetchInstruction();
+            DecodeAndExecute(next_instruction);
+            cpu->PC = branch_delay.target;
+            branch_delay.active = false;
+        }
+        
+        if (load_delay.active) {
+            // Handle load delay slot
+            SetRegister(load_delay.reg, load_delay.value);
+            load_delay.active = false;
+        }
+    }
+
+    void R3000A_CPU::UpdateMemoryTiming() {
+        // PS1 Quirk: Memory access timing
+        static int cycles = 0;
+        
+        if (memory->IsBusy()) {
+            cycles++;
+            if (cycles >= 3) {  // Typical memory access latency
+                cycles = 0;
+            }
+        }
+    }
+
+    void R3000A_CPU::ExecuteCOP0(uint32_t instruction) {
+        Instruction instr;
+        instr.raw = instruction;
+
+        switch (instr.r.rs) {
+            case 0x00:  // MFC0
+                SetRegister(instr.r.rt, GetCOP0Register(instr.r.rd));
+                break;
+            
+            case 0x04:  // MTC0
+                SetCOP0Register(instr.r.rd, GetRegister(instr.r.rt));
+                break;
+            
+            case 0x10:  // RFE
+                // Return from exception
+                cop0.SR = (cop0.SR & ~0x3F) | ((cop0.SR >> 2) & 0xF);
+                break;
+        }
+    }
+
+    void R3000A_CPU::Op_SB(uint8_t rt, uint8_t rs, uint16_t offset) {
+        uint32_t addr = GetRegister(rs) + (int16_t)offset;
+        
+        // PS1 Quirk: Store uses current register value, not delayed
+        memory->Write8(addr, GetRegister(rt) & 0xFF);
+    }
+
+    void R3000A_CPU::Op_JAL(uint32_t target) {
+        // Store return address in R31 (RA)
+        SetRegister(31, cpu->PC + 8);
+        
+        // Jump to target address
+        branch_delay.target = (cpu->PC & 0xF0000000) | (target << 2);
+        branch_delay.active = true;
+    }
+
+    void R3000A_CPU::Op_BLEZ(uint8_t rs, uint16_t offset) {
+        // Branch if less than or equal to zero
+        if ((int32_t)GetRegister(rs) <= 0) {
+            int32_t signExtOffset = (int16_t)offset;
+            branch_delay.target = cpu->PC + (signExtOffset << 2);
+            branch_delay.active = true;
+        }
+    }
+
+    // Helper function for COP0
+    uint32_t R3000A_CPU::GetCOP0Register(uint8_t reg) const {
+        switch (reg) {
+            case 12: return cop0.SR;     // Status Register
+            case 13: return cop0.CAUSE;   // Cause Register
+            case 14: return cop0.EPC;     // Exception Program Counter
+            case 15: return cop0.PRID;    // Processor ID
+            default: return 0;
+        }
+    }
+
+    void R3000A_CPU::SetCOP0Register(uint8_t reg, uint32_t value) {
+        switch (reg) {
+            case 12: cop0.SR = value; break;
+            case 13: cop0.CAUSE = value; break;
+            case 14: cop0.EPC = value; break;
+            // PRID is read-only
         }
     }
 }

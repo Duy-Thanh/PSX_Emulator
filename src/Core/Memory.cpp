@@ -74,21 +74,21 @@ namespace PSX {
     }
 
     uint32_t Memory::TranslateAddress(uint32_t address) {
-        // PS1 Quirk: Address masking behavior
-        if (address >= KSEG0_START && address < KSEG2_START) {
-            // KSEG0/KSEG1: Strip top 3 bits
-            address &= 0x1FFFFFFF;
-            
-            // PS1 Quirk: BIOS mirrors in its 512KB region
-            if (address >= BIOS_START && address < (BIOS_START + 0x80000)) {
-                address = BIOS_START + (address & BIOS_MASK);
-            }
-            
-            // PS1 Quirk: RAM mirrors
-            if (address < RAM_SIZE) {
-                address &= RAM_MASK;
-            }
+        // PS1 Quirk: Memory segment translation
+        if (address >= KSEG1_START) {
+            return address - KSEG1_START;  // Strip segment bits for KSEG1 (uncached)
+        } else if (address >= KSEG0_START) {
+            return address - KSEG0_START;  // Strip segment bits for KSEG0 (cached)
         }
+        
+        // PS1 Quirk: Memory mirroring
+        if (address < RAM_SIZE) {
+            return address & RAM_MASK;
+        } else if (address >= BIOS_START && address < (BIOS_START + BIOS_SIZE)) {
+            // PS1 Quirk: BIOS mirroring - crucial for boot process
+            return (address - BIOS_START) & BIOS_MASK;
+        }
+        
         return address;
     }
 
@@ -128,20 +128,34 @@ namespace PSX {
     }
 
     uint32_t Memory::Read32(uint32_t address) {
+        // PS1 Quirk: Memory wrapping
+        address &= 0x1FFFFFFF;
+        
+        // PS1 Quirk: Unaligned reads don't cause exceptions
+        if (address & 3) {
+            uint32_t aligned = address & ~3;
+            uint32_t shift = (address & 3) * 8;
+            uint32_t data = Read32(aligned);
+            return (data >> shift) | (Read32(aligned + 4) << (32 - shift));
+        }
+        
         // PS1 Quirk: Cache behavior
-        if (IsCacheable(address) && cache_enabled) {
-            uint32_t cache_line = (address & 0x3F0) >> 4;
-            uint32_t tag = address & ~0x3FF;
+        if (IsCacheable(address)) {
+            uint32_t line = (address >> 4) & 0x3F;
+            uint32_t tag = address >> 10;
             
-            if (cache_valid[cache_line] && cache_tags[cache_line] == tag) {
-                // Cache hit
-                uint32_t offset = address & 0xF;
-                return *(uint32_t*)(&icache[cache_line * 16 + offset]);
-            } else {
-                // Cache miss - load new line
+            if (!cache_valid[line] || cache_tags[line] != tag) {
                 UpdateCache(address);
             }
+            
+            if (cache_valid[line] && cache_tags[line] == tag) {
+                uint32_t offset = (address >> 2) & 3;
+                return *(uint32_t*)&icache[line * 16 + offset * 4];
+            }
         }
+        
+        // PS1 Quirk: Memory mirroring in KUSEG/KSEG0/KSEG1
+        address = TranslateAddress(address);
         
         // PS1 Quirk: Memory mirroring in RAM region
         uint32_t masked_addr = TranslateAddress(address);
@@ -478,31 +492,42 @@ namespace PSX {
         return 0;
     }
 
-    bool Memory::IsCacheable(uint32_t address) {
+    bool Memory::IsCacheable(uint32_t address) const {
         // PS1 quirk: Only KSEG0 is cached, KSEG1 is not
         return (address >= KSEG0_START && address < KSEG1_START) && cache_enabled;
     }
 
     void Memory::UpdateCache(uint32_t address) {
+        // PS1 Quirk: Cache updates during DMA
+        if (dma_active) {
+            // Cache updates are blocked during DMA
+            return;
+        }
+        
+        // PS1 Quirk: Cache line locking
+        uint32_t line = (address >> 4) & 0x3F;
+        if (cache_locked[line]) {
+            return;
+        }
+        
         if (!cache_enabled) return;
         
-        uint32_t cache_line = (address >> 4) & 0x3F;
         uint32_t cache_tag = address >> 10;
         
         // PS1 Quirk: Cache updates can happen even with invalid tags
-        cache_tags[cache_line] = cache_tag;
-        cache_valid[cache_line] = true;
+        cache_tags[line] = cache_tag;
+        cache_valid[line] = true;
         
         // PS1 Quirk: Cache fills from invalid memory return garbage
         if ((address & 0x1FFFFFFF) >= RAM_SIZE) {
             // Fill with repeating pattern based on address
             for (int i = 0; i < 16; i++) {
-                icache[cache_line * 16 + i] = (address + i) & 0xFF;
+                icache[line * 16 + i] = (address + i) & 0xFF;
             }
         } else {
             // Normal cache fill
             for (int i = 0; i < 16; i++) {
-                icache[cache_line * 16 + i] = ram[(address & ~0xF) + i];
+                icache[line * 16 + i] = ram[(address & ~0xF) + i];
             }
         }
     }
@@ -519,30 +544,40 @@ namespace PSX {
     void Memory::HandleDMATransfer(uint32_t channel) {
         auto& dma = dma_channels[channel];
         
-        // PS1 Quirk: DMA transfer behavior depends on channel
+        // PS1 Quirk: DMA timing and choking
         switch (channel) {
             case 2:  // GPU
-                if (!gpu->IsBusy()) {
-                    // Transfer data to/from GPU
-                    uint32_t addr = dma.base_addr & 0x1FFFFC;
-                    for (uint32_t i = 0; i < dma.block_size; i++) {
-                        if (dma.control & 1) {  // To RAM
-                            Write32(addr, gpu->ReadGPUDATA());
-                        } else {  // From RAM
-                            gpu->WriteGP0(Read32(addr));
-                        }
-                        addr += 4;
-                    }
-                    dma.active = false;
-                    interrupt_stat |= (1 << (channel + 24));  // Set DMA interrupt
+                if (!gpu->IsReadyForDMA()) {
+                    return;  // GPU busy, try again later
                 }
                 break;
-            
+                
             case 3:  // CDROM
-                if (!cdrom_busy) {
-                    // Handle CDROM DMA
-                    // ... CDROM specific DMA logic ...
+                if (cdrom_seeking || !cdrom_sector_ready) {
+                    return;  // CD not ready
                 }
+                break;
+                
+            case 4:  // SPU
+                if (spu_busy) {
+                    return;  // SPU busy
+                }
+                break;
+        }
+        
+        // PS1 Quirk: DMA transfer modes
+        uint32_t mode = (dma.control >> 9) & 3;
+        switch (mode) {
+            case 0:  // Block transfer
+                HandleBlockDMA(channel);
+                break;
+                
+            case 1:  // Linked list transfer
+                HandleLinkedListDMA(channel);
+                break;
+                
+            case 2:  // Chain transfer
+                HandleChainDMA(channel);
                 break;
         }
     }
@@ -557,5 +592,90 @@ namespace PSX {
         std::fill(icache.begin() + cache_line * 16, 
                   icache.begin() + (cache_line + 1) * 16, 
                   0);
+    }
+
+    void Memory::HandleBlockDMA(uint32_t channel) {
+        auto& dma = dma_channels[channel];
+        uint32_t addr = dma.base_addr;
+        uint32_t remaining = dma.block_size;
+        
+        while (remaining > 0) {
+            switch (channel) {
+                case 2:  // GPU
+                    if (gpu && (dma.control & (1 << 0))) {  // To GPU
+                        gpu->WriteGP0(Read32(addr));
+                    } else {  // From GPU
+                        Write32(addr, gpu->ReadGPUREAD());
+                    }
+                    break;
+                
+                // ... handle other channels ...
+            }
+            
+            addr += 4;
+            remaining--;
+        }
+        
+        dma.active = false;
+    }
+
+    void Memory::HandleLinkedListDMA(uint32_t channel) {
+        if (channel != 2) return;  // Only GPU supports linked list
+        
+        auto& dma = dma_channels[channel];
+        uint32_t addr = dma.base_addr & 0x1FFFFC;
+        
+        while (true) {
+            uint32_t header = Read32(addr);
+            uint32_t remaining = header >> 24;
+            
+            while (remaining > 0) {
+                addr += 4;
+                gpu->WriteGP0(Read32(addr));
+                remaining--;
+            }
+            
+            if (header & 0x800000) break;  // End of linked list
+            addr = header & 0x1FFFFC;
+        }
+        
+        dma.active = false;
+    }
+
+    void Memory::HandleChainDMA(uint32_t channel) {
+        // Similar to linked list but with different header format
+        auto& dma = dma_channels[channel];
+        uint32_t addr = dma.base_addr;
+        
+        while (true) {
+            uint32_t header = Read32(addr);
+            uint32_t size = header >> 24;
+            addr += 4;
+            
+            for (uint32_t i = 0; i < size; i++) {
+                uint32_t data = Read32(addr + i * 4);
+                // Process data according to channel
+                switch (channel) {
+                    case 2:  // GPU
+                        gpu->WriteGP0(data);
+                        break;
+                    // ... handle other channels ...
+                }
+            }
+            
+            if (header & 0x800000) break;  // End of chain
+            addr = header & 0x1FFFFC;
+        }
+        
+        dma.active = false;
+    }
+
+    uint32_t Memory::ReadCacheIsolated(uint32_t address) const {
+        // PS1 Quirk: When cache is isolated, reads come directly from I-cache
+        uint32_t line = (address >> 4) & 0x3F;  // 64 cache lines
+        uint32_t offset = (address >> 2) & 3;   // 4 words per line
+        
+        // Return the word from isolated cache
+        return *(uint32_t*)&icache[line * 16 + offset * 4];
     }
 }

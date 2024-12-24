@@ -160,6 +160,23 @@ namespace PSX {
             void Op_LHU(uint8_t rt, uint8_t rs, uint16_t offset);
             void Op_SH(uint8_t rt, uint8_t rs, uint16_t offset);
             void Op_BGTZ(uint8_t rs, uint16_t offset);
+
+            // Add these member variables
+            uint32_t current_instruction;
+            
+            // Add missing method declarations
+            void HandleDelaySlot();
+            void UpdateMemoryTiming();
+            void ExecuteCOP0(uint32_t instruction);
+            
+            // Add missing operation declarations
+            void Op_SB(uint8_t rt, uint8_t rs, uint16_t offset);
+            void Op_JAL(uint32_t target);
+            void Op_BLEZ(uint8_t rs, uint16_t offset);
+
+            // COP0 helper functions
+            uint32_t GetCOP0Register(uint8_t reg) const;
+            void SetCOP0Register(uint8_t reg, uint32_t value);
         public:
             R3000A_CPU();
             ~R3000A_CPU();
