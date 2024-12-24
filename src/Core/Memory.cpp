@@ -248,18 +248,64 @@ namespace PSX {
     }
 
     // Stub implementations for now
-    uint8_t Memory::ReadJoyData() { return 0xFF; }
-    uint8_t Memory::ReadJoyStat() { return 0xFF; }
-    uint8_t Memory::ReadJoyMode() { return 0xFF; }
-    uint8_t Memory::ReadJoyCtrl() { return 0xFF; }
-    uint8_t Memory::ReadCDROM(uint8_t reg) { return 0xFF; }
+    uint8_t Memory::ReadJoyData() {
+        // TODO: Implement proper controller reading
+        return 0xFF;  // No controller connected
+    }
+
+    uint8_t Memory::ReadJoyStat() {
+        // Status bits:
+        // Bit 0: TX Ready 1 (1=Ready/Started)
+        // Bit 1: RX FIFO Not Empty (0=Empty)
+        // Bit 2: TX Ready 2 (1=Ready/Finished)
+        // Bit 7: ACK Input Level (0=Low, 1=High)
+        return 0x5;  // TX ready, no data in RX FIFO
+    }
+
+    uint8_t Memory::ReadJoyMode() {
+        // Return current mode settings
+        return 0;  // Default mode
+    }
+
+    uint8_t Memory::ReadJoyCtrl() {
+        // Return current control settings
+        return 0;  // No special control bits set
+    }
+
+    uint8_t Memory::ReadCDROM(uint8_t reg) {
+        switch (reg) {
+            case 0:  // Status register
+                return 0x18;  // Shell open, motor off
+            case 1:  // Response FIFO
+                return 0;
+            case 2:  // Data FIFO
+                return 0;
+            case 3:  // IRQ Enable/Flags
+                return 0;
+            default:
+                return 0xFF;
+        }
+    }
+
     uint8_t Memory::ReadMDEC(uint32_t address) { return 0xFF; }
 
     void Memory::WriteJoyData(uint8_t value) {}
     void Memory::WriteJoyStat(uint8_t value) {}
     void Memory::WriteJoyMode(uint8_t value) {}
     void Memory::WriteJoyCtrl(uint8_t value) {}
-    void Memory::WriteCDROM(uint8_t reg, uint8_t value) {}
+    void Memory::WriteCDROM(uint8_t reg, uint8_t value) {
+        switch (reg) {
+            case 0:  // Command register
+                // Handle CD-ROM commands
+                break;
+            case 1:  // Sound Map Data Out
+                break;
+            case 2:  // Sound Map Coding Info
+                break;
+            case 3:  // IRQ Enable/Flags
+                break;
+        }
+    }
     void Memory::WriteMDEC(uint32_t address, uint8_t value) {}
 
     void Memory::WriteDMAControl(uint32_t channel, uint32_t value) {

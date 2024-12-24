@@ -36,15 +36,17 @@ namespace PSX {
     }
 
     void R3000A_CPU::Initialize() {
-        this->Reset();
+        cpu = new CPU();
+        Reset();
     }
 
     void R3000A_CPU::Reset() {
-        std::memset(this->cpu, 0, sizeof(CPU));
-
-        this->cpu->PC = 0xBFC00000;
-
-        this->cpu->R0 = 0;
+        memset(cpu, 0, sizeof(CPU));
+        cpu->PC = 0xBFC00000;  // BIOS entry point
+        cop0.SR = 0;
+        cop0.CAUSE = 0;
+        cop0.EPC = 0;
+        cop0.PRID = 0x00000002;  // R3000A processor
     }
 
     uint32_t R3000A_CPU::GetRegister(uint8_t reg) const {
@@ -387,28 +389,40 @@ namespace PSX {
     }
 
     void R3000A_CPU::Op_DIV(uint8_t rs, uint8_t rt) {
-        int32_t dividend = (int32_t)GetRegister(rs);
-        int32_t divisor = (int32_t)GetRegister(rt);
+        int32_t n = (int32_t)GetRegister(rs);
+        int32_t d = (int32_t)GetRegister(rt);
         
-        if (divisor != 0) {
-            cpu->LO = dividend / divisor;
-            cpu->HI = dividend % divisor;
+        if (d == 0) {
+            // Division by zero
+            cpu->HI = (uint32_t)n;
+            cpu->LO = (n >= 0) ? 0xFFFFFFFF : 1;
+        } else if ((uint32_t)n == 0x80000000 && d == -1) {
+            // Integer overflow
+            cpu->HI = 0;
+            cpu->LO = 0x80000000;
+        } else {
+            cpu->HI = (uint32_t)(n % d);
+            cpu->LO = (uint32_t)(n / d);
         }
     }
 
     void R3000A_CPU::Op_MULTU(uint8_t rs, uint8_t rt) {
         uint64_t result = (uint64_t)GetRegister(rs) * (uint64_t)GetRegister(rt);
-        cpu->LO = (uint32_t)result;
-        cpu->HI = (uint32_t)(result >> 32);
+        cpu->HI = (result >> 32) & 0xFFFFFFFF;
+        cpu->LO = result & 0xFFFFFFFF;
     }
 
     void R3000A_CPU::Op_DIVU(uint8_t rs, uint8_t rt) {
-        uint32_t dividend = GetRegister(rs);
-        uint32_t divisor = GetRegister(rt);
+        uint32_t n = GetRegister(rs);
+        uint32_t d = GetRegister(rt);
         
-        if (divisor != 0) {
-            cpu->LO = dividend / divisor;
-            cpu->HI = dividend % divisor;
+        if (d == 0) {
+            // Division by zero
+            cpu->HI = n;
+            cpu->LO = 0xFFFFFFFF;
+        } else {
+            cpu->HI = n % d;
+            cpu->LO = n / d;
         }
     }
 
@@ -468,5 +482,13 @@ namespace PSX {
             case 15: value = cop0.PRID; break;
         }
         SetRegister(rt, value);
+    }
+
+    void R3000A_CPU::Op_SYSCALL() {
+        HandleException(EXCEPTION_SYSCALL);
+    }
+
+    void R3000A_CPU::Op_BREAK() {
+        HandleException(EXCEPTION_BP);
     }
 }
