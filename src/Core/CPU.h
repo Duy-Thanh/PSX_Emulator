@@ -105,6 +105,38 @@ namespace PSX {
             Memory* memory;
             GPU* gpu;
             GTE* gte;
+
+            // Add missing CPU control registers
+            struct COP0 {
+                uint32_t SR;      // Status Register
+                uint32_t CAUSE;   // Cause Register
+                uint32_t EPC;     // Exception Program Counter
+                uint32_t PRID;    // Processor ID
+            } cop0;
+
+            // Add interrupt handling
+            void HandleInterrupt();
+            void HandleException(uint32_t excode);
+            bool CheckInterrupts();
+
+            // Add missing CPU operations
+            void Op_MTC0(uint8_t rt, uint8_t rd);  // Move To Coprocessor 0
+            void Op_MFC0(uint8_t rt, uint8_t rd);  // Move From Coprocessor 0
+            void Op_RFE();                         // Return From Exception
+            void Op_SYSCALL();                     // System Call
+            void Op_BREAK();                       // Break
+
+            // Exception codes
+            static constexpr uint32_t EXCEPTION_INT    = 0;   // Interrupt
+            static constexpr uint32_t EXCEPTION_ADEL   = 4;   // Address error (load/fetch)
+            static constexpr uint32_t EXCEPTION_ADES   = 5;   // Address error (store)
+            static constexpr uint32_t EXCEPTION_IBE    = 6;   // Bus error (instruction fetch)
+            static constexpr uint32_t EXCEPTION_DBE    = 7;   // Bus error (data load/store)
+            static constexpr uint32_t EXCEPTION_SYSCALL = 8;  // System call
+            static constexpr uint32_t EXCEPTION_BP     = 9;   // Breakpoint
+            static constexpr uint32_t EXCEPTION_RI     = 10;  // Reserved instruction
+            static constexpr uint32_t EXCEPTION_CPU    = 11;  // Coprocessor unusable
+            static constexpr uint32_t EXCEPTION_OV     = 12;  // Arithmetic overflow
         public:
             R3000A_CPU();
             ~R3000A_CPU();

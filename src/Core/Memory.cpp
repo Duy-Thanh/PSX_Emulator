@@ -17,45 +17,38 @@ namespace PSX {
     }
 
     bool Memory::LoadBIOS(const std::string& path) {
-        std::ifstream file(path, std::ios::binary);
-        if (!file) {
-            std::cerr << "Failed to open BIOS file: " << path << std::endl;
-            return false;
-        }
-
-        file.read(reinterpret_cast<char*>(bios.data()), BIOS_SIZE);
-        return true;
+        FILE* file = fopen(path.c_str(), "rb");
+        if (!file) return false;
+        
+        size_t read = fread(bios.data(), 1, BIOS_SIZE, file);
+        fclose(file);
+        
+        return read == BIOS_SIZE;
     }
 
     uint32_t Memory::TranslateAddress(uint32_t address) {
-        // Remove region bits for KSEG0 and KSEG1
+        // Handle KSEG0 and KSEG1 address translation
         if (address >= KSEG0_START && address < KSEG2_START) {
-            address &= 0x1FFFFFFF;
+            return address & 0x1FFFFFFF;  // Strip top 3 bits
         }
-
         return address;
     }
 
     uint8_t Memory::Read8(uint32_t address) {
         uint32_t masked_addr = TranslateAddress(address);
         
-        // Add missing memory regions
-        if (masked_addr >= 0x1F000000 && masked_addr < 0x1F080000) {  // Parallel I/O
-            return ReadParallelPort(masked_addr);
+        if (masked_addr < RAM_SIZE) {
+            return ram[masked_addr];
         }
-        else if (masked_addr >= 0x1F080000 && masked_addr < 0x1F100000) {  // Serial I/O
-            return ReadSerialPort(masked_addr);
+        else if (masked_addr >= BIOS_START && masked_addr < BIOS_START + BIOS_SIZE) {
+            return bios[masked_addr - BIOS_START];
         }
-        else if (masked_addr < 0x00800000) {              // RAM: 2MB
-            return ram[masked_addr & 0x1FFFFF];
+        else if (masked_addr >= SCRATCHPAD_START && masked_addr < SCRATCHPAD_START + SCRATCHPAD_SIZE) {
+            return scratchpad[masked_addr - SCRATCHPAD_START];
         }
-        else if (masked_addr >= 0x1F800000 && masked_addr < 0x1F800400) {  // Scratchpad: 1KB
-            return scratchpad[masked_addr & 0x3FF];
-        }
-        else if (masked_addr >= 0x1FC00000 && masked_addr < 0x1FC80000) {  // BIOS: 512KB
-            return bios[masked_addr & 0x7FFFF];
-        }
-        else if (masked_addr >= 0x1F801000 && masked_addr < 0x1F803000) {  // I/O Ports
+        
+        // Handle I/O ports
+        if (masked_addr >= 0x1F801000 && masked_addr < 0x1F803000) {
             return ReadIO8(masked_addr);
         }
         
@@ -216,11 +209,12 @@ namespace PSX {
     }
 
     uint32_t Memory::ReadIO32(uint32_t address) {
-        if (address >= 0x1F801810 && address < 0x1F801814) {  // GPU
-            if (address == 0x1F801810) {
-                return gpu->ReadGPUREAD();
-            }
-            return gpu->ReadGPUSTAT();
+        switch (address) {
+            case 0x1F801070:  // I_STAT - Interrupt status
+                return interrupt_stat;
+            case 0x1F801074:  // I_MASK - Interrupt mask
+                return interrupt_mask;
+            // ... existing GPU and other cases ...
         }
         return (ReadIO16(address) | (ReadIO16(address + 2) << 16));
     }
@@ -239,15 +233,17 @@ namespace PSX {
     }
 
     void Memory::WriteIO32(uint32_t address, uint32_t value) {
-        if (address == 0x1F801810) {  // GP0 - GPU Command/Data
-            gpu->WriteGP0(value);
-        }
-        else if (address == 0x1F801814) {  // GP1 - GPU Control/Status
-            gpu->WriteGP1(value);
-        }
-        else {
-            WriteIO16(address, value & 0xFFFF);
-            WriteIO16(address + 2, (value >> 16) & 0xFFFF);
+        switch (address) {
+            case 0x1F801070:  // I_STAT - Interrupt status
+                interrupt_stat &= value;  // Writing 1 to a bit clears it
+                break;
+            case 0x1F801074:  // I_MASK - Interrupt mask
+                interrupt_mask = value;
+                break;
+            // ... existing GPU and other cases ...
+            default:
+                WriteIO16(address, value & 0xFFFF);
+                WriteIO16(address + 2, (value >> 16) & 0xFFFF);
         }
     }
 
@@ -306,5 +302,42 @@ namespace PSX {
 
     void Memory::WriteSerialPort(uint32_t address, uint8_t value) {
         // Stub implementation
+    }
+
+    void Memory::SetDMABaseAddr(uint32_t channel, uint32_t addr) {
+        if (channel < dma_channels.size()) {
+            dma_channels[channel].base_addr = addr & 0x1FFFFF;  // Mask to RAM size
+        }
+    }
+
+    void Memory::SetDMABlockSize(uint32_t channel, uint32_t size) {
+        if (channel < dma_channels.size()) {
+            dma_channels[channel].block_size = size;
+        }
+    }
+
+    uint32_t Memory::GetDMAStatus(uint32_t channel) {
+        if (channel < dma_channels.size()) {
+            return dma_channels[channel].control;
+        }
+        return 0;
+    }
+
+    bool Memory::IsCacheable(uint32_t address) {
+        // KSEG0 is cached, KSEG1 is not
+        return (address >= KSEG0_START && address < KSEG1_START);
+    }
+
+    void Memory::UpdateCache(uint32_t address) {
+        if (!cache_enabled || !IsCacheable(address)) return;
+        
+        // Simple direct-mapped cache implementation
+        uint32_t cache_line = (address >> 4) & 0x3F;
+        uint32_t cache_tag = address >> 10;
+        
+        // Update cache line
+        for (int i = 0; i < 16; i++) {
+            icache[cache_line * 16 + i] = ram[(address & ~0xF) + i];
+        }
     }
 }

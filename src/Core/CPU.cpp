@@ -139,85 +139,91 @@ namespace PSX {
             case 0x00:  // SLL
                 Op_SLL(instr.r.rd, instr.r.rt, instr.r.shamt);
                 break;
-            
             case 0x02:  // SRL
                 Op_SRL(instr.r.rd, instr.r.rt, instr.r.shamt);
                 break;
-            
+            case 0x03:  // SRA
+                Op_SRA(instr.r.rd, instr.r.rt, instr.r.shamt);
+                break;
             case 0x08:  // JR
                 Op_JR(instr.r.rs);
                 break;
-            
+            case 0x09:  // JALR
+                Op_JALR(instr.r.rd, instr.r.rs);
+                break;
+            case 0x18:  // MULT
+                Op_MULT(instr.r.rs, instr.r.rt);
+                break;
+            case 0x19:  // MULTU
+                Op_MULTU(instr.r.rs, instr.r.rt);
+                break;
+            case 0x1A:  // DIV
+                Op_DIV(instr.r.rs, instr.r.rt);
+                break;
+            case 0x1B:  // DIVU
+                Op_DIVU(instr.r.rs, instr.r.rt);
+                break;
             case 0x20:  // ADD
                 Op_ADD(instr.r.rd, instr.r.rs, instr.r.rt);
                 break;
-            
             case 0x21:  // ADDU
                 Op_ADDU(instr.r.rd, instr.r.rs, instr.r.rt);
                 break;
-            
             case 0x24:  // AND
                 Op_AND(instr.r.rd, instr.r.rs, instr.r.rt);
                 break;
-            
+            case 0x25:  // OR
+                Op_OR(instr.r.rd, instr.r.rs, instr.r.rt);
+                break;
+            case 0x26:  // XOR
+                Op_XOR(instr.r.rd, instr.r.rs, instr.r.rt);
+                break;
             case 0x27:  // NOR
                 Op_NOR(instr.r.rd, instr.r.rs, instr.r.rt);
                 break;
-            
             case 0x2A:  // SLT
                 Op_SLT(instr.r.rd, instr.r.rs, instr.r.rt);
                 break;
-            
-            case 0x03:  // SRA - Shift Right Arithmetic
-                Op_SRA(instr.r.rd, instr.r.rt, instr.r.shamt);
-                break;
-            
-            case 0x09:  // JALR - Jump And Link Register
-                Op_JALR(instr.r.rd, instr.r.rs);
-                break;
-            
-            case 0x22:  // SUB - Subtract
-                Op_SUB(instr.r.rd, instr.r.rs, instr.r.rt);
-                break;
-            
-            case 0x23:  // SUBU - Subtract Unsigned
-                Op_SUBU(instr.r.rd, instr.r.rs, instr.r.rt);
-                break;
-            
-            case 0x25:  // OR - Logical OR
-                Op_OR(instr.r.rd, instr.r.rs, instr.r.rt);
-                break;
-            
-            case 0x26:  // XOR - Logical XOR
-                Op_XOR(instr.r.rd, instr.r.rs, instr.r.rt);
-                break;
-            
-            case 0x18:  // MULT - Multiply
-                Op_MULT(instr.r.rs, instr.r.rt);
-                break;
-            
-            case 0x19:  // MULTU - Multiply Unsigned
-                Op_MULTU(instr.r.rs, instr.r.rt);
-                break;
-            
-            case 0x1A:  // DIV - Divide
-                Op_DIV(instr.r.rs, instr.r.rt);
-                break;
-            
-            case 0x1B:  // DIVU - Divide Unsigned
-                Op_DIVU(instr.r.rs, instr.r.rt);
-                break;
-            
-            case 0x10:  // MFHI - Move From HI
-                Op_MFHI(instr.r.rd);
-                break;
-            
-            case 0x12:  // MFLO - Move From LO
-                Op_MFLO(instr.r.rd);
-                break;
-            
             default:
-                std::cerr << "Unhandled R-type function: 0x" << std::hex << instr.r.funct << std::endl;
+                HandleException(10);  // Reserved Instruction
+                break;
+        }
+    }
+
+    void R3000A_CPU::ExecuteI(Instruction instr) {
+        switch (instr.i.opcode) {
+            case 0x08:  // ADDI
+                Op_ADDI(instr.i.rt, instr.i.rs, instr.i.immediate);
+                break;
+            case 0x09:  // ADDIU
+                Op_ADDIU(instr.i.rt, instr.i.rs, instr.i.immediate);
+                break;
+            case 0x0C:  // ANDI
+                Op_ANDI(instr.i.rt, instr.i.rs, instr.i.immediate);
+                break;
+            case 0x0D:  // ORI
+                Op_ORI(instr.i.rt, instr.i.rs, instr.i.immediate);
+                break;
+            case 0x0F:  // LUI
+                Op_LUI(instr.i.rt, instr.i.immediate);
+                break;
+            case 0x23:  // LW
+                Op_LW(instr.i.rt, instr.i.rs, instr.i.immediate);
+                break;
+            case 0x2B:  // SW
+                Op_SW(instr.i.rt, instr.i.rs, instr.i.immediate);
+                break;
+            case 0x04:  // BEQ
+                Op_BEQ(instr.i.rs, instr.i.rt, instr.i.immediate);
+                break;
+            case 0x05:  // BNE
+                Op_BNE(instr.i.rs, instr.i.rt, instr.i.immediate);
+                break;
+            case 0x0A:  // SLTI
+                Op_SLTI(instr.i.rt, instr.i.rs, instr.i.immediate);
+                break;
+            default:
+                HandleException(10);  // Reserved Instruction
                 break;
         }
     }
@@ -267,12 +273,18 @@ namespace PSX {
 
     void R3000A_CPU::Run() {
         while (true) {
-            this->Step();
+            // Check for interrupts before executing next instruction
+            if (CheckInterrupts()) {
+                HandleInterrupt();
+            }
+            
+            Step();
         }
     }
 
     void R3000A_CPU::Stop() {
-
+        // Implementation for stopping CPU execution
+        // Could set a flag that's checked in the Run loop
     }
 
     void R3000A_CPU::Op_ADDU(uint8_t rd, uint8_t rs, uint8_t rt) {
@@ -411,5 +423,50 @@ namespace PSX {
     void R3000A_CPU::Op_XOR(uint8_t rd, uint8_t rs, uint8_t rt) {
         uint32_t result = GetRegister(rs) ^ GetRegister(rt);
         SetRegister(rd, result);
+    }
+
+    void R3000A_CPU::HandleInterrupt() {
+        // Save current PC to EPC
+        cop0.EPC = cpu->PC;
+        
+        // Update Status Register
+        cop0.SR |= 0x2;  // Set EXL bit
+        
+        // Jump to interrupt vector
+        cpu->PC = 0x80000080;
+    }
+
+    void R3000A_CPU::HandleException(uint32_t excode) {
+        cop0.CAUSE = (cop0.CAUSE & ~0x7C) | (excode << 2);
+        HandleInterrupt();
+    }
+
+    bool R3000A_CPU::CheckInterrupts() {
+        // Check if interrupts are enabled
+        if (!(cop0.SR & 0x1)) return false;
+        
+        // Check if any unmasked interrupts are pending
+        uint32_t pending = memory->GetInterruptStatus() & memory->GetInterruptMask();
+        return pending != 0;
+    }
+
+    void R3000A_CPU::Op_MTC0(uint8_t rt, uint8_t rd) {
+        uint32_t value = GetRegister(rt);
+        switch (rd) {
+            case 12: cop0.SR = value; break;     // Status Register
+            case 13: cop0.CAUSE = value; break;  // Cause Register
+            case 14: cop0.EPC = value; break;    // EPC
+        }
+    }
+
+    void R3000A_CPU::Op_MFC0(uint8_t rt, uint8_t rd) {
+        uint32_t value = 0;
+        switch (rd) {
+            case 12: value = cop0.SR; break;
+            case 13: value = cop0.CAUSE; break;
+            case 14: value = cop0.EPC; break;
+            case 15: value = cop0.PRID; break;
+        }
+        SetRegister(rt, value);
     }
 }
