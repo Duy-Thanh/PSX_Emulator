@@ -3,6 +3,10 @@
 #include <cstdint>
 #include <string>
 #include <cstring>
+#include <iostream>
+#include "Memory.h"
+#include "GPU.h"
+#include "GTE.h"
 
 namespace PSX {
     class R3000A_CPU {
@@ -71,6 +75,36 @@ namespace PSX {
             void Op_J(uint32_t target);
             void Op_LW(uint8_t rt, uint8_t rs, uint16_t offset);
             void Op_SW(uint8_t rt, uint8_t rs, uint16_t offset);
+
+            void Op_ADDU(uint8_t rd, uint8_t rs, uint8_t rt);
+            void Op_ADDIU(uint8_t rt, uint8_t rs, uint16_t immediate);
+            void Op_ANDI(uint8_t rt, uint8_t rs, uint16_t immediate);
+            void Op_BNE(uint8_t rs, uint8_t rt, uint16_t offset);
+            void Op_LUI(uint8_t rt, uint16_t immediate);
+            void Op_NOR(uint8_t rd, uint8_t rs, uint8_t rt);
+            void Op_OR(uint8_t rd, uint8_t rs, uint8_t rt);
+            void Op_ORI(uint8_t rt, uint8_t rs, uint16_t immediate);
+            void Op_SLT(uint8_t rd, uint8_t rs, uint8_t rt);
+            void Op_SLTI(uint8_t rt, uint8_t rs, uint16_t immediate);
+            void Op_SLL(uint8_t rd, uint8_t rt, uint8_t shamt);
+            void Op_SRL(uint8_t rd, uint8_t rt, uint8_t shamt);
+            void Op_SUB(uint8_t rd, uint8_t rs, uint8_t rt);
+            void Op_SUBU(uint8_t rd, uint8_t rs, uint8_t rt);
+            void Op_JR(uint8_t rs);
+
+            void Op_SRA(uint8_t rd, uint8_t rt, uint8_t shamt);
+            void Op_JALR(uint8_t rd, uint8_t rs);
+            void Op_MULT(uint8_t rs, uint8_t rt);
+            void Op_MULTU(uint8_t rs, uint8_t rt);
+            void Op_DIV(uint8_t rs, uint8_t rt);
+            void Op_DIVU(uint8_t rs, uint8_t rt);
+            void Op_MFHI(uint8_t rd);
+            void Op_MFLO(uint8_t rd);
+            void Op_XOR(uint8_t rd, uint8_t rs, uint8_t rt);
+
+            Memory* memory;
+            GPU* gpu;
+            GTE* gte;
         public:
             R3000A_CPU();
             ~R3000A_CPU();

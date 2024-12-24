@@ -1,0 +1,26 @@
+{
+    "files.associations": {
+        "iostream": "cpp",
+        "cstdint": "cpp",
+        "algorithm": "cpp",
+        "chrono": "cpp",
+        "complex": "cpp",
+        "expected": "cpp",
+        "functional": "cpp",
+        "optional": "cpp",
+        "regex": "cpp",
+        "system_error": "cpp",
+        "type_traits": "cpp",
+        "xlocmon": "cpp",
+        "xtr1common": "cpp",
+        "xutility": "cpp",
+        "*.tcc": "cpp",
+        "charconv": "cpp",
+        "format": "cpp",
+        "ratio": "cpp",
+        "array": "cpp",
+        "tuple": "cpp",
+        "utility": "cpp"
+    },
+    "C_Cpp.errorSquiggles": "disabled"
+}
