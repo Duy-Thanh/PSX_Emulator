@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <cstring>
 #include <array>
 #include "GPU.h"
 #include "GTE.h"
@@ -32,17 +33,24 @@ namespace PSX {
             static constexpr uint32_t SCRATCHPAD_SIZE = 1024;
             static constexpr uint32_t SCRATCHPAD_MASK = SCRATCHPAD_SIZE - 1;
 
+            static constexpr uint32_t IO_BASE = 0x1F801000;
+            static constexpr uint32_t IO_SIZE = 0x2000;
+            static constexpr uint32_t EXP1_BASE = 0x1F000000;
+            static constexpr uint32_t EXP2_BASE = 0x1F802000;
+            static constexpr uint32_t CACHE_CTRL = 0xFFFE0130;
+
             // Hardware components
             GPU* gpu;
             GTE* gte;
 
             // DMA channels
             struct DMAChannel {
-                uint32_t base_addr = 0;
-                uint32_t block_size = 0;
-                uint32_t control = 0;
+                uint32_t base_addr = 0;    // Base address for transfer
+                uint32_t block_size = 0;   // Block size/count
+                uint32_t control = 0;      // Control register
+                bool active = false;       // Transfer active flag
             };
-            std::array<DMAChannel, 7> dma_channels;
+            std::array<DMAChannel, 7> dma_channels;  // PSX has 7 DMA channels
 
             // Interrupt registers
             uint32_t interrupt_stat = 0;  // I_STAT - Interrupt status
@@ -50,7 +58,9 @@ namespace PSX {
 
             // Cache control
             bool cache_enabled = false;
-            std::array<uint8_t, 1024> icache;  // Instruction Cache
+            std::array<uint8_t, 1024> icache;  // 1KB Instruction Cache
+            std::array<uint32_t, 64> cache_tags;  // Cache tags
+            std::array<bool, 64> cache_valid;  // Cache line validity
 
             // Internal functions
             uint32_t TranslateAddress(uint32_t address);
@@ -64,12 +74,47 @@ namespace PSX {
             void WriteSerialPort(uint32_t address, uint8_t value);
             void WriteDMAControl(uint32_t channel, uint32_t value);
 
+            // Controller state
+            bool joy_transfer_active = false;
+            uint8_t joy_status = 0;
+            uint8_t joy_control = 0;
+            uint8_t joy_mode = 0;
+            uint8_t joy_baud = 0;
+            std::array<uint8_t, 8> joy_rx_data;
+            std::array<uint8_t, 8> joy_tx_data;
+            size_t joy_rx_pos = 0;
+            size_t joy_tx_pos = 0;
+
+            // CD-ROM state
+            bool cdrom_busy = false;
+            uint8_t cdrom_status = 0;
+            uint8_t cdrom_command = 0;
+            uint8_t cdrom_interrupt = 0;
+            std::array<uint8_t, 16> cdrom_response;
+            std::array<uint8_t, 2048> cdrom_sector_buffer;
+            size_t cdrom_response_size = 0;
+            size_t cdrom_response_pos = 0;
+
+            // MDEC state
+            bool mdec_busy = false;
+            uint32_t mdec_status = 0;
+            uint32_t mdec_control = 0;
+
+            // SPU state
+            bool spu_busy = false;
+            uint16_t spu_status = 0;
+            uint16_t spu_control = 0;
+
         public:
             Memory();
             ~Memory();
 
             void Reset();
             bool LoadBIOS(const std::string& path);
+
+            void InitDMAChannels();
+            void HandleDMATransfer(uint32_t channel);
+            void InvalidateCacheLine(uint32_t address);
 
             // Memory access
             uint8_t Read8(uint32_t address);
@@ -117,5 +162,15 @@ namespace PSX {
             void WriteJoyCtrl(uint8_t value);
             void WriteCDROM(uint8_t reg, uint8_t value);
             void WriteMDEC(uint32_t address, uint8_t value);
+
+            // Add these helper functions for peripheral state management
+            bool IsJoyTransferActive() const { return joy_transfer_active; }
+            void SetJoyTransferActive(bool active) { joy_transfer_active = active; }
+            bool IsCDROMBusy() const { return cdrom_busy; }
+            void SetCDROMBusy(bool busy) { cdrom_busy = busy; }
+            bool IsMDECBusy() const { return mdec_busy; }
+            void SetMDECBusy(bool busy) { mdec_busy = busy; }
+            bool IsSPUBusy() const { return spu_busy; }
+            void SetSPUBusy(bool busy) { spu_busy = busy; }
     };
 }

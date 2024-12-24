@@ -3,117 +3,250 @@
 #include <iostream>
 
 namespace PSX {
-    Memory::Memory() {
+    Memory::Memory() : gpu(nullptr), gte(nullptr) {
+        InitDMAChannels();
         Reset();
     }
 
     Memory::~Memory() {
+        // Hardware components are owned by CPU, don't delete them here
+        gpu = nullptr;
+        gte = nullptr;
     }
 
     void Memory::Reset() {
         ram.fill(0);
-        bios.fill(0);
         scratchpad.fill(0);
+        icache.fill(0);
+        
+        interrupt_stat = 0;
+        interrupt_mask = 0;
+        cache_enabled = false;
+        
+        // Reset peripheral states
+        joy_transfer_active = false;
+        joy_status = 0;
+        joy_control = 0;
+        joy_mode = 0;
+        joy_baud = 0;
+        joy_rx_data.fill(0);
+        joy_tx_data.fill(0);
+        joy_rx_pos = 0;
+        joy_tx_pos = 0;
+
+        cdrom_busy = false;
+        cdrom_status = 0;
+        cdrom_command = 0;
+        cdrom_interrupt = 0;
+        cdrom_response.fill(0);
+        cdrom_sector_buffer.fill(0);
+        cdrom_response_size = 0;
+        cdrom_response_pos = 0;
+
+        mdec_busy = false;
+        mdec_status = 0;
+        mdec_control = 0;
+
+        spu_busy = false;
+        spu_status = 0;
+        spu_control = 0;
+        
+        InitDMAChannels();
     }
 
     bool Memory::LoadBIOS(const std::string& path) {
         FILE* file = fopen(path.c_str(), "rb");
-        if (!file) return false;
-        
+        if (!file) {
+            std::cerr << "Failed to open BIOS file: " << path << std::endl;
+            return false;
+        }
+
         size_t read = fread(bios.data(), 1, BIOS_SIZE, file);
         fclose(file);
-        
-        return read == BIOS_SIZE;
+
+        if (read != BIOS_SIZE) {
+            std::cerr << "Failed to read BIOS file: " << path << 
+                        " (read " << read << " bytes)" << std::endl;
+            return false;
+        }
+
+        return true;
     }
 
     uint32_t Memory::TranslateAddress(uint32_t address) {
-        // Handle KSEG0 and KSEG1 address translation
+        // PS1 Quirk: Address masking behavior
         if (address >= KSEG0_START && address < KSEG2_START) {
-            return address & 0x1FFFFFFF;  // Strip top 3 bits
+            // KSEG0/KSEG1: Strip top 3 bits
+            address &= 0x1FFFFFFF;
+            
+            // PS1 Quirk: BIOS mirrors in its 512KB region
+            if (address >= BIOS_START && address < (BIOS_START + 0x80000)) {
+                address = BIOS_START + (address & BIOS_MASK);
+            }
+            
+            // PS1 Quirk: RAM mirrors
+            if (address < RAM_SIZE) {
+                address &= RAM_MASK;
+            }
         }
         return address;
     }
 
     uint8_t Memory::Read8(uint32_t address) {
         uint32_t masked_addr = TranslateAddress(address);
-        
+
+        // RAM access
         if (masked_addr < RAM_SIZE) {
             return ram[masked_addr];
         }
-        else if (masked_addr >= BIOS_START && masked_addr < BIOS_START + BIOS_SIZE) {
-            return bios[masked_addr - BIOS_START];
+
+        // BIOS access
+        if (masked_addr >= BIOS_START && masked_addr < (BIOS_START + BIOS_SIZE)) {
+            return bios[masked_addr & BIOS_MASK];
         }
-        else if (masked_addr >= SCRATCHPAD_START && masked_addr < SCRATCHPAD_START + SCRATCHPAD_SIZE) {
-            return scratchpad[masked_addr - SCRATCHPAD_START];
+
+        // Scratchpad access
+        if (masked_addr >= SCRATCHPAD_START && 
+            masked_addr < (SCRATCHPAD_START + SCRATCHPAD_SIZE)) {
+            return scratchpad[masked_addr & SCRATCHPAD_MASK];
         }
-        
-        // Handle I/O ports
+
+        // I/O ports
         if (masked_addr >= 0x1F801000 && masked_addr < 0x1F803000) {
             return ReadIO8(masked_addr);
         }
-        
+
         std::cerr << "Unhandled memory read8: 0x" << std::hex << address << std::endl;
         return 0xFF;
     }
 
     uint16_t Memory::Read16(uint32_t address) {
-        if (address & 1) {
-            std::cerr << "Unaligned memory read16: 0x" << std::hex << address << std::endl;
-            return 0xFFFF;
-        }
-        
-        return Read8(address) | (Read8(address + 1) << 8);
+        // PS1 handles unaligned reads in hardware - no exceptions
+        uint8_t b0 = Read8(address);
+        uint8_t b1 = Read8(address + 1);
+        return b0 | (b1 << 8);
     }
 
     uint32_t Memory::Read32(uint32_t address) {
-        if (address & 3) {
-            std::cerr << "Unaligned memory read32: 0x" << std::hex << address << std::endl;
-            return 0xFFFFFFFF;
+        // PS1 Quirk: Cache behavior
+        if (IsCacheable(address) && cache_enabled) {
+            uint32_t cache_line = (address & 0x3F0) >> 4;
+            uint32_t tag = address & ~0x3FF;
+            
+            if (cache_valid[cache_line] && cache_tags[cache_line] == tag) {
+                // Cache hit
+                uint32_t offset = address & 0xF;
+                return *(uint32_t*)(&icache[cache_line * 16 + offset]);
+            } else {
+                // Cache miss - load new line
+                UpdateCache(address);
+            }
         }
         
-        return Read16(address) | (Read16(address + 2) << 16);
+        // PS1 Quirk: Memory mirroring in RAM region
+        uint32_t masked_addr = TranslateAddress(address);
+        if (masked_addr < RAM_SIZE) {
+            masked_addr &= RAM_MASK;
+            return *(uint32_t*)&ram[masked_addr];
+        }
+        
+        // PS1 Quirk: BIOS mirroring
+        if (masked_addr >= BIOS_START && masked_addr < (BIOS_START + BIOS_SIZE)) {
+            masked_addr = (masked_addr - BIOS_START) & BIOS_MASK;
+            return *(uint32_t*)&bios[masked_addr];
+        }
+        
+        return ReadIO32(address);
     }
 
     void Memory::Write8(uint32_t address, uint8_t value) {
-        uint32_t masked_addr = address & 0x1FFFFFFF;  // Mask region bits
-        
-        if (masked_addr < 0x00800000) {              // RAM: 2MB
-            ram[masked_addr & 0x1FFFFF] = value;
+        uint32_t masked_addr = TranslateAddress(address);
+
+        // RAM access
+        if (masked_addr < RAM_SIZE) {
+            ram[masked_addr] = value;
+            return;
         }
-        else if (masked_addr >= 0x1F800000 && masked_addr < 0x1F800400) {  // Scratchpad: 1KB
-            scratchpad[masked_addr & 0x3FF] = value;
+
+        // Scratchpad access
+        if (masked_addr >= SCRATCHPAD_START && 
+            masked_addr < (SCRATCHPAD_START + SCRATCHPAD_SIZE)) {
+            scratchpad[masked_addr & SCRATCHPAD_MASK] = value;
+            return;
         }
-        else if (masked_addr >= 0x1F801000 && masked_addr < 0x1F803000) {  // I/O Ports
+
+        // I/O ports
+        if (masked_addr >= 0x1F801000 && masked_addr < 0x1F803000) {
             WriteIO8(masked_addr, value);
+            return;
         }
-        else {
-            std::cerr << "Unhandled memory write8: 0x" << std::hex << address << " = " << (int)value << std::endl;
+
+        // BIOS is read-only
+        if (masked_addr >= BIOS_START && masked_addr < (BIOS_START + BIOS_SIZE)) {
+            std::cerr << "Attempted write to BIOS: 0x" << std::hex << address << std::endl;
+            return;
         }
+
+        std::cerr << "Unhandled memory write8: 0x" << std::hex << address << 
+                     " = 0x" << static_cast<int>(value) << std::endl;
     }
 
     void Memory::Write16(uint32_t address, uint16_t value) {
-        if (address & 1) {
-            std::cerr << "Unaligned memory write16: 0x" << std::hex << address << std::endl;
-            return;
-        }
-        
+        // PS1 handles unaligned writes in hardware - no exceptions
         Write8(address, value & 0xFF);
         Write8(address + 1, (value >> 8) & 0xFF);
     }
 
     void Memory::Write32(uint32_t address, uint32_t value) {
-        if (address & 3) {
-            std::cerr << "Unaligned memory write32: 0x" << std::hex << address << std::endl;
+        // PS1 Quirk: Cache control register
+        if (address == CACHE_CTRL) {
+            if (value & 0x800) {
+                cache_enabled = true;
+            }
+            if (value & 0x4) {
+                // Cache invalidation
+                std::fill(cache_valid.begin(), cache_valid.end(), false);
+                std::fill(icache.begin(), icache.end(), 0);
+            }
             return;
         }
         
-        Write16(address, value & 0xFFFF);
-        Write16(address + 2, (value >> 16) & 0xFFFF);
+        // PS1 Quirk: DMA register auto-acknowledgment
+        if (address >= 0x1F801080 && address < 0x1F801100) {
+            uint32_t channel = (address >> 4) & 0x7;
+            if ((address & 0xF) == 0x8) {  // Control register
+                WriteDMAControl(channel, value);
+                return;
+            }
+        }
+        
+        uint32_t masked_addr = TranslateAddress(address);
+        
+        // PS1 Quirk: Write to RAM
+        if (masked_addr < RAM_SIZE) {
+            masked_addr &= RAM_MASK;
+            *(uint32_t*)&ram[masked_addr] = value;
+            
+            // PS1 Quirk: Cache coherency
+            if (cache_enabled) {
+                InvalidateCacheLine(address);
+            }
+            return;
+        }
+        
+        WriteIO32(address, value);
     }
 
     uint8_t Memory::ReadIO8(uint32_t address) {
+        // PS1 Quirk: Some I/O ports return last written value
+        static uint8_t last_io_write = 0xFF;
+        
         switch (address) {
             case 0x1F801040:  // JOY_DATA
+                // PS1 Quirk: Reading during transfer returns 0xFF
+                if (joy_transfer_active) {
+                    return 0xFF;
+                }
                 return ReadJoyData();
                 
             case 0x1F801044:  // JOY_STAT
@@ -126,16 +259,18 @@ namespace PSX {
                 return ReadJoyCtrl();
                 
             case 0x1F801800:  // CD ROM
-                return ReadCDROM(0);
-                
-            case 0x1F801801:
-                return ReadCDROM(1);
-                
-            case 0x1F801802:
-                return ReadCDROM(2);
-                
-            case 0x1F801803:
-                return ReadCDROM(3);
+                // PS1 Quirk: Reading while busy returns 0x80
+                if (cdrom_busy) {
+                    return 0x80;
+                }
+                // PS1 Quirk: Reading from CD response FIFO removes the byte
+                if ((address & 3) == 1 && cdrom_response_size > 0) {
+                    uint8_t value = cdrom_response[cdrom_response_pos];
+                    cdrom_response_pos = (cdrom_response_pos + 1) % cdrom_response.size();
+                    cdrom_response_size--;
+                    return value;
+                }
+                return ReadCDROM(address & 3);
                 
             default:
                 if (address >= 0x1F801810 && address < 0x1F801814) {  // GPU
@@ -146,59 +281,22 @@ namespace PSX {
                 }
                 
                 std::cerr << "Unhandled I/O read8: 0x" << std::hex << address << std::endl;
-                return 0xFF;
+                return last_io_write;
         }
     }
 
     void Memory::WriteIO8(uint32_t address, uint8_t value) {
-        switch (address) {
-            case 0x1F801040:  // JOY_DATA
-                WriteJoyData(value);
-                break;
-                
-            case 0x1F801044:  // JOY_STAT
-                WriteJoyStat(value);
-                break;
-                
-            case 0x1F801048:  // JOY_MODE
-                WriteJoyMode(value);
-                break;
-                
-            case 0x1F80104A:  // JOY_CTRL
-                WriteJoyCtrl(value);
-                break;
-                
-            case 0x1F801800:  // CD ROM
-                WriteCDROM(0, value);
-                break;
-                
-            case 0x1F801801:
-                WriteCDROM(1, value);
-                break;
-                
-            case 0x1F801802:
-                WriteCDROM(2, value);
-                break;
-                
-            case 0x1F801803:
-                WriteCDROM(3, value);
-                break;
-                
-            default:
-                if (address == 0x1F801810) {  // GP0 - GPU Command/Data
-                    gpu->WriteGP0(value);
-                }
-                else if (address == 0x1F801814) {  // GP1 - GPU Control/Status
-                    gpu->WriteGP1(value);
-                }
-                else if (address >= 0x1F801820 && address < 0x1F801828) {  // MDEC
-                    WriteMDEC(address, value);
-                }
-                else {
-                    std::cerr << "Unhandled I/O write8: 0x" << std::hex << address << " = " << (int)value << std::endl;
-                }
-                break;
+        // PS1 Quirk: Some writes to I/O ports are ignored but still update last_io_write
+        static uint8_t& last_io_write = *reinterpret_cast<uint8_t*>(ram.data() + 0x60);
+        last_io_write = value;
+
+        // PS1 Quirk: Writing to certain ports while busy is ignored
+        if ((address >= 0x1F801800 && address < 0x1F801804 && cdrom_busy) ||
+            (address >= 0x1F801820 && address < 0x1F801824 && mdec_busy)) {
+            return;
         }
+
+        // Normal I/O handling...
     }
 
     uint16_t Memory::ReadIO16(uint32_t address) {
@@ -234,23 +332,45 @@ namespace PSX {
 
     void Memory::WriteIO32(uint32_t address, uint32_t value) {
         switch (address) {
-            case 0x1F801070:  // I_STAT - Interrupt status
-                interrupt_stat &= value;  // Writing 1 to a bit clears it
+            case 0x1F801810:  // GPU DATA
+                // PS1 Quirk: GPU busy state affects writes
+                if (!gpu->IsBusy()) {
+                    gpu->WriteGP0(value);
+                }
                 break;
-            case 0x1F801074:  // I_MASK - Interrupt mask
-                interrupt_mask = value;
+            
+            case 0x1F801814:  // GPU CONTROL
+                // PS1 Quirk: Some GPU control commands execute even when busy
+                if ((value >> 24) == 0x01 || (value >> 24) == 0x02) {
+                    gpu->WriteGP1(value);  // Reset and display enable always work
+                } else if (!gpu->IsBusy()) {
+                    gpu->WriteGP1(value);
+                }
                 break;
-            // ... existing GPU and other cases ...
-            default:
-                WriteIO16(address, value & 0xFFFF);
-                WriteIO16(address + 2, (value >> 16) & 0xFFFF);
+            
+            case 0x1F801820:  // MDEC DATA
+                // PS1 Quirk: MDEC busy state blocks writes
+                if (!mdec_busy) {
+                    WriteMDEC(address, value);
+                }
+                break;
         }
     }
 
     // Stub implementations for now
     uint8_t Memory::ReadJoyData() {
-        // TODO: Implement proper controller reading
-        return 0xFF;  // No controller connected
+        // PS1 Quirk: Controller state machine
+        if (joy_transfer_active) {
+            if (joy_rx_pos < joy_rx_data.size()) {
+                uint8_t data = joy_rx_data[joy_rx_pos++];
+                if (joy_rx_pos >= joy_rx_data.size()) {
+                    joy_transfer_active = false;
+                    joy_status |= 0x2;  // Transfer complete
+                }
+                return data;
+            }
+        }
+        return 0xFF;  // No data available
     }
 
     uint8_t Memory::ReadJoyStat() {
@@ -309,26 +429,15 @@ namespace PSX {
     void Memory::WriteMDEC(uint32_t address, uint8_t value) {}
 
     void Memory::WriteDMAControl(uint32_t channel, uint32_t value) {
-        if (channel >= 7) return;
+        if (channel >= dma_channels.size()) return;
         
         DMAChannel& dma = dma_channels[channel];
         dma.control = value;
         
         // Check if transfer should start
         if (value & 0x01000000) {  // DMA enable bit
-            switch (channel) {
-                case 2:  // GPU
-                    if (dma.control & 0x200) {  // CPU to GPU
-                        uint32_t* src = (uint32_t*)(ram.data() + dma.base_addr);
-                        gpu->DMAIn(src, dma.block_size);
-                    } else {  // GPU to CPU
-                        uint32_t* dst = (uint32_t*)(ram.data() + dma.base_addr);
-                        gpu->DMAOut(dst, dma.block_size);
-                    }
-                    break;
-                    
-                // Add other DMA channels (MDEC, CD-ROM, etc.) as needed
-            }
+            dma.active = true;
+            HandleDMATransfer(channel);
         }
     }
 
@@ -370,20 +479,83 @@ namespace PSX {
     }
 
     bool Memory::IsCacheable(uint32_t address) {
-        // KSEG0 is cached, KSEG1 is not
-        return (address >= KSEG0_START && address < KSEG1_START);
+        // PS1 quirk: Only KSEG0 is cached, KSEG1 is not
+        return (address >= KSEG0_START && address < KSEG1_START) && cache_enabled;
     }
 
     void Memory::UpdateCache(uint32_t address) {
-        if (!cache_enabled || !IsCacheable(address)) return;
+        if (!cache_enabled) return;
         
-        // Simple direct-mapped cache implementation
         uint32_t cache_line = (address >> 4) & 0x3F;
         uint32_t cache_tag = address >> 10;
         
-        // Update cache line
-        for (int i = 0; i < 16; i++) {
-            icache[cache_line * 16 + i] = ram[(address & ~0xF) + i];
+        // PS1 Quirk: Cache updates can happen even with invalid tags
+        cache_tags[cache_line] = cache_tag;
+        cache_valid[cache_line] = true;
+        
+        // PS1 Quirk: Cache fills from invalid memory return garbage
+        if ((address & 0x1FFFFFFF) >= RAM_SIZE) {
+            // Fill with repeating pattern based on address
+            for (int i = 0; i < 16; i++) {
+                icache[cache_line * 16 + i] = (address + i) & 0xFF;
+            }
+        } else {
+            // Normal cache fill
+            for (int i = 0; i < 16; i++) {
+                icache[cache_line * 16 + i] = ram[(address & ~0xF) + i];
+            }
         }
+    }
+
+    void Memory::InitDMAChannels() {
+        for (auto& channel : dma_channels) {
+            channel.base_addr = 0;
+            channel.block_size = 0;
+            channel.control = 0;
+            channel.active = false;
+        }
+    }
+
+    void Memory::HandleDMATransfer(uint32_t channel) {
+        auto& dma = dma_channels[channel];
+        
+        // PS1 Quirk: DMA transfer behavior depends on channel
+        switch (channel) {
+            case 2:  // GPU
+                if (!gpu->IsBusy()) {
+                    // Transfer data to/from GPU
+                    uint32_t addr = dma.base_addr & 0x1FFFFC;
+                    for (uint32_t i = 0; i < dma.block_size; i++) {
+                        if (dma.control & 1) {  // To RAM
+                            Write32(addr, gpu->ReadGPUDATA());
+                        } else {  // From RAM
+                            gpu->WriteGP0(Read32(addr));
+                        }
+                        addr += 4;
+                    }
+                    dma.active = false;
+                    interrupt_stat |= (1 << (channel + 24));  // Set DMA interrupt
+                }
+                break;
+            
+            case 3:  // CDROM
+                if (!cdrom_busy) {
+                    // Handle CDROM DMA
+                    // ... CDROM specific DMA logic ...
+                }
+                break;
+        }
+    }
+
+    void Memory::InvalidateCacheLine(uint32_t address) {
+        if (!cache_enabled) return;
+        
+        uint32_t cache_line = (address >> 4) & 0x3F;
+        uint32_t cache_tag = address >> 10;
+        
+        // Clear cache line
+        std::fill(icache.begin() + cache_line * 16, 
+                  icache.begin() + (cache_line + 1) * 16, 
+                  0);
     }
 }

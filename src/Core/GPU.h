@@ -37,6 +37,9 @@ namespace PSX {
         uint16_t transfer_width = 0;
         uint16_t transfer_height = 0;
 
+        // GPU busy state
+        bool busy;
+
         // Helper functions
         void ExecuteGP0Command();
         void ExecuteGP1Command(uint32_t command);
@@ -73,6 +76,7 @@ namespace PSX {
         // GPU Register access
         uint32_t ReadGPUSTAT() const { return status; }
         uint32_t ReadGPUREAD() const;
+        uint32_t ReadGPUDATA();
         void WriteGP0(uint32_t data);
         void WriteGP1(uint32_t command);
 
@@ -83,5 +87,7 @@ namespace PSX {
         // DMA access
         void DMAIn(uint32_t* data, uint32_t count);
         void DMAOut(uint32_t* data, uint32_t count);
+
+        bool IsBusy() const { return busy; }
     };
 }

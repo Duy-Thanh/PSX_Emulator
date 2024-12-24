@@ -33,6 +33,8 @@ namespace PSX {
     }
 
     void GPU::WriteGP0(uint32_t data) {
+        busy = true;  // Set busy flag when processing commands
+        
         if (cmd_buffer_size == 0) {
             // New command
             uint8_t opcode = (data >> 24) & 0xFF;
@@ -109,9 +111,13 @@ namespace PSX {
                 cmd_buffer_size = 0;
             }
         }
+        
+        busy = false;  // Clear busy flag when done
     }
 
     void GPU::WriteGP1(uint32_t command) {
+        busy = true;  // Set busy flag when processing commands
+        
         uint8_t opcode = (command >> 24) & 0xFF;
         
         switch (opcode) {
@@ -155,6 +161,8 @@ namespace PSX {
                 std::cerr << "Unhandled GP1 command: 0x" << std::hex << (int)opcode << std::endl;
                 break;
         }
+        
+        busy = false;  // Clear busy flag when done
     }
 
     void GPU::ExecuteGP0Command() {
@@ -446,5 +454,27 @@ namespace PSX {
         uint8_t b = (tb * color.b) >> 8;
         
         return ((r & 0x1F) << 11) | ((g & 0x1F) << 6) | ((b & 0x1F) << 1);
+    }
+
+    uint32_t GPU::ReadGPUDATA() {
+        // PS1 Quirk: Reading during VRAM transfer
+        if ((status & 0x60000000) == 0x20000000) {
+            uint16_t x = transfer_x % VRAM_WIDTH;
+            uint16_t y = transfer_y % VRAM_HEIGHT;
+            
+            // Read two pixels (32-bit word)
+            uint16_t pixel1 = ReadVRAM(x, y);
+            uint16_t pixel2 = ReadVRAM(x + 1, y);
+            
+            // Update transfer coordinates
+            transfer_x += 2;
+            if (transfer_x >= transfer_width) {
+                transfer_x = 0;
+                transfer_y++;
+            }
+            
+            return (pixel2 << 16) | pixel1;
+        }
+        return 0;
     }
 }

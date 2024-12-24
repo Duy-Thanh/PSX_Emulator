@@ -63,17 +63,47 @@ namespace PSX {
     }
 
     void R3000A_CPU::Step() {
-        // Save current PC for branch delay slot handling
+        // PS1 Quirk: Handle load delay slots
+        uint32_t old_load_reg = load_delay.reg;
+        uint32_t old_load_value = load_delay.value;
+        bool had_load = load_delay.active;
+        
+        load_delay.active = false;  // Clear for next instruction
+        
+        // PS1 Quirk: Save current PC for exception handling
         uint32_t current_pc = cpu->PC;
         
-        // Fetch instruction from memory
-        uint32_t instruction = FetchInstruction();
+        // Fetch and execute next instruction
+        uint32_t instr = FetchInstruction();
         
-        // Increment PC before execution (important for proper branch delay slot handling)
-        cpu->PC += 4;
+        // PS1 Quirk: Handle exceptions in delay slots
+        bool in_delay_slot = branch_delay.active;
         
-        // Decode and execute instruction
-        DecodeAndExecute(instruction);
+        try {
+            DecodeAndExecute(instr);
+        } catch (const std::exception&) {
+            // PS1 Quirk: Exception in delay slot handling
+            if (in_delay_slot) {
+                cop0.EPC = current_pc - 4;  // Point to branch instruction
+                cop0.CAUSE |= (1 << 31);    // Set BD (Branch Delay) bit
+            } else {
+                cop0.EPC = current_pc;
+            }
+            throw;  // Re-throw the exception
+        }
+        
+        // PS1 Quirk: Apply load delay after executing delay slot
+        if (had_load) {
+            SetRegister(old_load_reg, old_load_value);
+        }
+        
+        // PS1 Quirk: Handle branch delay slots
+        if (branch_delay.active) {
+            cpu->PC = branch_delay.target;
+            branch_delay.active = false;
+        } else {
+            cpu->PC += 4;
+        }
     }
 
     uint32_t R3000A_CPU::FetchInstruction() {
@@ -81,13 +111,40 @@ namespace PSX {
     }
 
     void R3000A_CPU::DecodeAndExecute(uint32_t instruction) {
+        // PS1 Quirk: NOP instruction (0x00000000) must be handled specially
+        if (instruction == 0) {
+            return;  // True NOP, do nothing
+        }
+        
+        // PS1 Quirk: Reserved instruction exception
+        if ((instruction & 0xFC00003F) == 0x0C00003F) {
+            HandleException(EXCEPTION_RI);
+            return;
+        }
+        
         Instruction instr;
         instr.raw = instruction;
         
-        // Decode based on opcode
+        // PS1 specific: Coprocessor instructions when COP0 is disabled still execute!
+        // This is a real quirk of the PS1's R3000A
+        if ((instr.r.opcode >= 0x10 && instr.r.opcode <= 0x13) && 
+            !(cop0.SR & 0x10000000)) {
+            // Don't generate exception, let it execute anyway!
+        }
+
         switch (instr.r.opcode) {
             case 0x00:  // SPECIAL
                 ExecuteR(instr);
+                break;
+            
+            case 0x10:  // COP0
+                if (instr.r.rs == 0x00) {  // MFC0
+                    Op_MFC0(instr.r.rt, instr.r.rd);
+                } else if (instr.r.rs == 0x04) {  // MTC0
+                    Op_MTC0(instr.r.rt, instr.r.rd);
+                } else if (instr.r.funct == 0x10) {  // RFE
+                    Op_RFE();
+                }
                 break;
             
             case 0x02:  // J
@@ -231,8 +288,17 @@ namespace PSX {
     }
 
     void R3000A_CPU::Op_ADD(uint8_t rd, uint8_t rs, uint8_t rt) {
-        uint32_t result = this->GetRegister(rs) + this->GetRegister(rt);
-        this->SetRegister(rd, result);
+        // PS1 Quirk: Overflow checking
+        int32_t s = (int32_t)GetRegister(rs);
+        int32_t t = (int32_t)GetRegister(rt);
+        int64_t result = (int64_t)s + (int64_t)t;
+        
+        if (result > INT32_MAX || result < INT32_MIN) {
+            HandleException(EXCEPTION_OV);
+            return;
+        }
+        
+        SetRegister(rd, (uint32_t)result);
     }
 
     void R3000A_CPU::Op_ADDI(uint8_t rt, uint8_t rs, uint16_t imm) {
@@ -248,24 +314,36 @@ namespace PSX {
     }
 
     void R3000A_CPU::Op_BEQ(uint8_t rs, uint8_t rt, uint16_t offset) {
-        if (GetRegister(rs) == GetRegister(rt)) {
+        // PS1 Quirk: Branch comparison uses values AFTER the delay slot
+        bool will_branch = GetRegister(rs) == GetRegister(rt);
+        
+        if (will_branch) {
             int32_t signExtOffset = (int16_t)offset;
-            // Branch target = PC + (offset << 2)
-            // -4 to account for the PC increment in Step()
-            cpu->PC += (signExtOffset << 2) - 4;
+            // PS1 Quirk: Branch target calculation includes current PC
+            branch_delay.target = cpu->PC + (signExtOffset << 2);
+            branch_delay.active = true;
         }
+        // PS1 Quirk: Next instruction is ALWAYS delay slot, even if branch not taken
     }
 
     void R3000A_CPU::Op_J(uint32_t target) {
-        // Jump target = (PC & 0xF0000000) | (target << 2)
+        // PS1 quirk: Jump target calculation
         uint32_t jump_addr = (cpu->PC & 0xF0000000) | (target << 2);
-        // Set next PC after delay slot
-        cpu->PC = jump_addr - 4;  // -4 because PC will be incremented in next Step()
+        branch_delay.target = jump_addr;
+        branch_delay.active = true;
     }
 
     void R3000A_CPU::Op_LW(uint8_t rt, uint8_t rs, uint16_t offset) {
         uint32_t address = GetRegister(rs) + (int16_t)offset;
-        SetRegister(rt, this->memory->Read32(address));
+        
+        // PS1 Quirk: Load delay slot behavior
+        load_delay.reg = rt;
+        load_delay.old_value = GetRegister(rt);  // Save old value
+        load_delay.value = memory->Read32(address);
+        load_delay.active = true;
+        
+        // PS1 Quirk: Reading from load delay slot target register
+        // returns the old value during the delay slot
     }
 
     void R3000A_CPU::Op_SW(uint8_t rt, uint8_t rs, uint16_t offset) {
@@ -307,10 +385,11 @@ namespace PSX {
     void R3000A_CPU::Op_BNE(uint8_t rs, uint8_t rt, uint16_t offset) {
         if (GetRegister(rs) != GetRegister(rt)) {
             int32_t signExtOffset = (int16_t)offset;
-            // Branch target = PC + (offset << 2)
-            // -4 to account for the PC increment in Step()
-            cpu->PC += (signExtOffset << 2) - 4;
+            // PS1 quirk: Branch target calculation includes current PC
+            branch_delay.target = cpu->PC + (signExtOffset << 2);
+            branch_delay.active = true;
         }
+        // PS1 quirk: Even if branch not taken, next instruction is delay slot
     }
 
     void R3000A_CPU::Op_LUI(uint8_t rt, uint16_t imm) {
@@ -338,10 +417,10 @@ namespace PSX {
         SetRegister(rd, s < t ? 1 : 0);
     }
 
-    void R3000A_CPU::Op_SLTI(uint8_t rt, uint8_t rs, uint16_t imm) {
+    void R3000A_CPU::Op_SLTI(uint8_t rt, uint8_t rs, uint16_t immediate) {
         int32_t s = (int32_t)GetRegister(rs);
-        int32_t i = (int16_t)imm;
-        SetRegister(rt, s < i ? 1 : 0);
+        int32_t imm = (int16_t)immediate;  // Sign extend
+        SetRegister(rt, s < imm ? 1 : 0);
     }
 
     void R3000A_CPU::Op_SLL(uint8_t rd, uint8_t rt, uint8_t shamt) {
@@ -392,18 +471,23 @@ namespace PSX {
         int32_t n = (int32_t)GetRegister(rs);
         int32_t d = (int32_t)GetRegister(rt);
         
+        // PS1 Quirk: Division by zero behavior
         if (d == 0) {
-            // Division by zero
             cpu->HI = (uint32_t)n;
             cpu->LO = (n >= 0) ? 0xFFFFFFFF : 1;
-        } else if ((uint32_t)n == 0x80000000 && d == -1) {
-            // Integer overflow
-            cpu->HI = 0;
-            cpu->LO = 0x80000000;
-        } else {
-            cpu->HI = (uint32_t)(n % d);
-            cpu->LO = (uint32_t)(n / d);
+            return;
         }
+        
+        // PS1 Quirk: Special case for INT_MIN / -1
+        if (n == INT32_MIN && d == -1) {
+            cpu->HI = 0;
+            cpu->LO = INT32_MIN;  // Result remains INT_MIN
+            return;
+        }
+        
+        // Normal division
+        cpu->HI = (uint32_t)(n % d);
+        cpu->LO = (uint32_t)(n / d);
     }
 
     void R3000A_CPU::Op_MULTU(uint8_t rs, uint8_t rt) {
@@ -451,25 +535,59 @@ namespace PSX {
     }
 
     void R3000A_CPU::HandleException(uint32_t excode) {
+        // PS1 quirk: Exception handling in branch delay slots
+        if (branch_delay.active) {
+            cop0.EPC = cpu->PC - 4;  // Point to branch instruction
+            cop0.CAUSE |= (1 << 31); // Set BD (Branch Delay) bit
+        } else {
+            cop0.EPC = cpu->PC - 4;
+        }
+
+        // PS1 specific: Status register handling
+        uint32_t mode = cop0.SR & 0x3F;  // Save current mode
+        cop0.SR &= ~0x3F;                // Clear mode bits
+        cop0.SR |= (mode << 2);          // Shift mode bits
+        
         cop0.CAUSE = (cop0.CAUSE & ~0x7C) | (excode << 2);
-        HandleInterrupt();
+        
+        // PS1 quirk: Always jump to fixed exception vector
+        cpu->PC = 0x80000080;
+        
+        // Clear delay slots
+        load_delay.active = false;
+        branch_delay.active = false;
     }
 
     bool R3000A_CPU::CheckInterrupts() {
-        // Check if interrupts are enabled
-        if (!(cop0.SR & 0x1)) return false;
+        if (!(cop0.SR & 0x1)) return false;  // Interrupts disabled
+        if (!(cop0.SR & 0x401)) return false;  // IE or IEc bits not set
         
-        // Check if any unmasked interrupts are pending
         uint32_t pending = memory->GetInterruptStatus() & memory->GetInterruptMask();
-        return pending != 0;
+        if (!pending) return false;
+        
+        cop0.CAUSE &= ~0xFF00;  // Clear pending interrupt bits
+        cop0.CAUSE |= (pending << 8);  // Set new pending interrupts
+        
+        return true;
     }
 
     void R3000A_CPU::Op_MTC0(uint8_t rt, uint8_t rd) {
         uint32_t value = GetRegister(rt);
+        
         switch (rd) {
-            case 12: cop0.SR = value; break;     // Status Register
-            case 13: cop0.CAUSE = value; break;  // Cause Register
-            case 14: cop0.EPC = value; break;    // EPC
+            case 12:  // Status Register
+                // PS1 Quirk: Only certain bits are writable
+                cop0.SR = (cop0.SR & 0xF0000000) | (value & 0x0FFFFFFF);
+                break;
+            
+            case 13:  // Cause Register
+                // PS1 Quirk: Only software interrupt bits are writable
+                cop0.CAUSE = (cop0.CAUSE & ~0x300) | (value & 0x300);
+                break;
+            
+            default:
+                // Other registers behave normally
+                *(&cop0.SR + rd) = value;
         }
     }
 
@@ -490,5 +608,79 @@ namespace PSX {
 
     void R3000A_CPU::Op_BREAK() {
         HandleException(EXCEPTION_BP);
+    }
+
+    void R3000A_CPU::Op_MTHI(uint8_t rs) {
+        cpu->HI = GetRegister(rs);
+    }
+
+    void R3000A_CPU::Op_MTLO(uint8_t rs) {
+        cpu->LO = GetRegister(rs);
+    }
+
+    void R3000A_CPU::Op_RFE() {
+        // Return from Exception
+        // Restore interrupt enable bits
+        uint32_t mode = cop0.SR & 0x3F;  // Current mode bits
+        cop0.SR &= ~0xF;                 // Clear current mode bits
+        cop0.SR |= (mode >> 2);          // Restore previous mode bits
+    }
+
+    void R3000A_CPU::Op_LB(uint8_t rt, uint8_t rs, uint16_t offset) {
+        uint32_t addr = GetRegister(rs) + (int16_t)offset;
+        
+        // PS1 Quirk: Load delay slot behavior
+        load_delay.reg = rt;
+        load_delay.old_value = GetRegister(rt);
+        // PS1 Quirk: Sign extension for byte loads
+        load_delay.value = (int8_t)memory->Read8(addr);
+        load_delay.active = true;
+    }
+
+    void R3000A_CPU::Op_LBU(uint8_t rt, uint8_t rs, uint16_t offset) {
+        uint32_t addr = GetRegister(rs) + (int16_t)offset;
+        
+        // PS1 Quirk: Load delay slot behavior
+        load_delay.reg = rt;
+        load_delay.old_value = GetRegister(rt);
+        load_delay.value = memory->Read8(addr);  // No sign extension
+        load_delay.active = true;
+    }
+
+    void R3000A_CPU::Op_LHU(uint8_t rt, uint8_t rs, uint16_t offset) {
+        uint32_t addr = GetRegister(rs) + (int16_t)offset;
+        
+        // PS1 Quirk: Unaligned halfword access
+        if (addr & 1) {
+            HandleException(EXCEPTION_ADEL);
+            return;
+        }
+        
+        // PS1 Quirk: Load delay slot behavior
+        load_delay.reg = rt;
+        load_delay.old_value = GetRegister(rt);
+        load_delay.value = memory->Read16(addr);
+        load_delay.active = true;
+    }
+
+    void R3000A_CPU::Op_SH(uint8_t rt, uint8_t rs, uint16_t offset) {
+        uint32_t addr = GetRegister(rs) + (int16_t)offset;
+        
+        // PS1 Quirk: Unaligned halfword access
+        if (addr & 1) {
+            HandleException(EXCEPTION_ADES);
+            return;
+        }
+        
+        memory->Write16(addr, GetRegister(rt) & 0xFFFF);
+    }
+
+    void R3000A_CPU::Op_BGTZ(uint8_t rs, uint16_t offset) {
+        // PS1 Quirk: Branch comparison uses current register value
+        if ((int32_t)GetRegister(rs) > 0) {
+            int32_t signExtOffset = (int16_t)offset;
+            branch_delay.target = cpu->PC + (signExtOffset << 2);
+            branch_delay.active = true;
+        }
     }
 }

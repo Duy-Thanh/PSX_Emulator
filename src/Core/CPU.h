@@ -125,6 +125,8 @@ namespace PSX {
             void Op_RFE();                         // Return From Exception
             void Op_SYSCALL();                     // System Call
             void Op_BREAK();                       // Break
+            void Op_MTLO(uint8_t rt);
+            void Op_MTHI(uint8_t rt);
 
             // Exception codes
             static constexpr uint32_t EXCEPTION_INT    = 0;   // Interrupt
@@ -137,6 +139,27 @@ namespace PSX {
             static constexpr uint32_t EXCEPTION_RI     = 10;  // Reserved instruction
             static constexpr uint32_t EXCEPTION_CPU    = 11;  // Coprocessor unusable
             static constexpr uint32_t EXCEPTION_OV     = 12;  // Arithmetic overflow
+
+            // Load delay slot handling
+            struct {
+                uint8_t reg;
+                uint32_t value;
+                uint32_t old_value;
+                bool active;
+            } load_delay;
+
+            // Branch delay slot handling
+            struct {
+                uint32_t target;
+                bool active;
+            } branch_delay;
+
+            // Add these declarations
+            void Op_LB(uint8_t rt, uint8_t rs, uint16_t offset);
+            void Op_LBU(uint8_t rt, uint8_t rs, uint16_t offset);
+            void Op_LHU(uint8_t rt, uint8_t rs, uint16_t offset);
+            void Op_SH(uint8_t rt, uint8_t rs, uint16_t offset);
+            void Op_BGTZ(uint8_t rs, uint16_t offset);
         public:
             R3000A_CPU();
             ~R3000A_CPU();
