@@ -28,17 +28,32 @@ int main(int argc, char* argv[]) {
     SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255);
     
     SDL_bool quit = SDL_FALSE;
+    const int FPS = 60;
+    const int FRAME_DELAY = 1000 / FPS;  // Time per frame in milliseconds
+    
     while(!quit)
     {
+        Uint32 frameStart = SDL_GetTicks();  // Get start time
+        
         SDL_Event event;
         while(SDL_PollEvent(&event))
         {
             if(event.type == SDL_QUIT)
                 quit = SDL_TRUE;
         }
+        
         SDL_RenderClear(renderer);
         SDL_RenderPresent(renderer);
+
+        // Calculate frame time and delay if needed
+        Uint32 frameTime = SDL_GetTicks() - frameStart;
+        if(frameTime < FRAME_DELAY)
+        {
+            SDL_Delay(FRAME_DELAY - frameTime);
+        }
     }
+
+    SDL_Delay(1000);
 
     SDL_DestroyWindow(window);
     SDL_Quit();
