@@ -59,8 +59,6 @@ set(CMAKE_RC_COMPILER "${CMAKE_BINARY_DIR}/mingw/mingw64/bin/windres.exe" CACHE 
 # Make sure RC compiler is set after project() as well
 set(CMAKE_RC_COMPILER "${CMAKE_BINARY_DIR}/mingw/mingw64/bin/windres.exe" CACHE STRING "" FORCE)
 
-add_subdirectory(deps/SDL2)
-
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -74,9 +72,7 @@ add_executable(PSXEmulator ${SOURCE_FILES})
 
 target_include_directories(PSXEmulator PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
-target_link_libraries(PSXEmulator PRIVATE SDL2)
-
-# Function to copy DLLs
+# Function to copy DLLs - Move this BEFORE we call it
 function(copy_runtime_dlls)
     # MinGW DLLs
     set(MINGW_DLLS
@@ -85,18 +81,28 @@ function(copy_runtime_dlls)
         "libwinpthread-1.dll"
     )
     
-    # Copy MinGW DLLs
+    # Check and copy MinGW DLLs
     foreach(DLL ${MINGW_DLLS})
-        file(COPY "${CMAKE_BINARY_DIR}/mingw/mingw64/bin/${DLL}"
-             DESTINATION "${CMAKE_BINARY_DIR}")
+        set(DLL_PATH "${CMAKE_BINARY_DIR}/mingw/mingw64/bin/${DLL}")
+        if(NOT EXISTS "${DLL_PATH}")
+            message(WARNING "MinGW DLL not found: ${DLL_PATH}")
+            continue()
+        endif()
+        file(COPY "${DLL_PATH}" DESTINATION "${CMAKE_BINARY_DIR}")
     endforeach()
 
-    # Copy SDL2.dll
-    file(COPY "${CMAKE_BINARY_DIR}/deps/SDL2/SDL2.dll"
-         DESTINATION "${CMAKE_BINARY_DIR}")
+    # Check and copy SDL2.dll
+    set(SDL2_DLL "${CMAKE_BINARY_DIR}/deps/SDL2/SDL2.dll")
+    if(NOT EXISTS "${SDL2_DLL}")
+        message(WARNING "SDL2.dll not found: ${SDL2_DLL}")
+    else()
+        file(COPY "${SDL2_DLL}" DESTINATION "${CMAKE_BINARY_DIR}")
+    endif()
          
-    message(STATUS "DLLs copied to build directory")
+    message(STATUS "DLL copy operation completed")
 endfunction()
 
-# Call the function after your executable is created
+# Then use it after SDL2 setup
+add_subdirectory(deps/SDL2)
+target_link_libraries(PSXEmulator PRIVATE SDL2)
 copy_runtime_dlls()
