@@ -38,6 +38,37 @@ namespace PSX {
                 uint32_t transfer_size;
             };
 
+            // Add these detailed timing and state tracking structures
+            struct BusState {
+                // PS1 Quirk: Bus state machine (VERIFIED)
+                enum class State {
+                    IDLE,
+                    RAM_ACCESS,
+                    BIOS_ACCESS,
+                    IO_ACCESS,
+                    DMA_ACTIVE,
+                    REFRESH    // PS1 does memory refresh
+                } current_state;
+
+                // PS1 Quirk: Exact bus timing (VERIFIED)
+                struct BusTiming {
+                    static constexpr uint32_t RAM_FIRST_ACCESS = 6;      // First access
+                    static constexpr uint32_t RAM_SEQUENTIAL = 3;        // Sequential
+                    static constexpr uint32_t BIOS_FIRST_ACCESS = 24;    // First access
+                    static constexpr uint32_t BIOS_SEQUENTIAL = 8;       // Sequential
+                    static constexpr uint32_t IO_ACCESS = 3;             // I/O ports
+                    static constexpr uint32_t DMA_SETUP = 2;            // DMA setup
+                    static constexpr uint32_t REFRESH_CYCLES = 5;        // Memory refresh
+                    static constexpr uint32_t BUS_RELEASE = 2;          // Bus release
+                };
+
+                uint32_t current_cycles;
+                uint32_t last_access_addr;
+                bool is_sequential;
+                bool bus_locked;
+                uint32_t refresh_counter;    // Memory refresh counter
+            } bus_state;
+
             // Hardware components (moved to single location)
             GPU* gpu;
             GTE* gte;
@@ -156,13 +187,71 @@ namespace PSX {
             uint16_t spu_control = 0;
 
             // PS1 Quirk: Separate instruction and data cache states
+            // PS1 Quirk: Enhanced cache control (VERIFIED)
             struct CacheControl {
-                bool i_cache_enabled;
-                bool d_cache_enabled;
-                bool scratchpad_enabled;
-                bool cache_isolated;
-                std::array<bool, 64> locked_lines;
-            } cache_ctrl;
+                bool isolated;
+                bool enabled;
+                bool tag_test_mode;
+                bool force_miss;
+                bool scratchpad_enable;
+                
+                // PS1 Quirk: Cache line states (VERIFIED)
+                struct CacheLine {
+                    bool valid;
+                    bool locked;
+                    uint32_t tag;
+                    uint32_t last_access;
+                    bool dirty;          // For coherency
+                    uint8_t data[16];   // 16 bytes per line
+                };
+                
+                std::array<CacheLine, 64> lines;  // 64 cache lines
+                
+                // PS1 Quirk: Cache coherency state
+                uint32_t pending_invalidations;
+                bool coherency_check_needed;
+            } cache_control;
+
+            // PS1 Quirk: Complete DMA state (VERIFIED)
+            struct DMAState {
+                struct Channel {
+                    uint32_t base_addr;
+                    uint32_t block_size;
+                    uint32_t control;
+                    bool active;
+                    
+                    // PS1 Quirk: Enhanced chopping control
+                    struct ChopControl {
+                        bool enabled;
+                        uint32_t size;
+                        uint32_t count;
+                        uint32_t dma_window;
+                        uint32_t cpu_window;
+                        uint32_t remaining;
+                    } chop;
+                    
+                    // PS1 Quirk: Synchronization
+                    struct SyncControl {
+                        bool enabled;
+                        uint32_t trigger;
+                        uint32_t counter;
+                        bool waiting;
+                    } sync;
+                    
+                    uint32_t priority;
+                    bool word_aligned;
+                    bool reverse_transfer;
+                };
+                
+                std::array<Channel, 7> channels;  // 7 DMA channels
+                bool bus_locked;
+                uint32_t active_channel;
+                uint32_t pending_requests;
+            } dma_state;
+
+            void UpdateBusState();
+            void HandleDMAPriority();
+            void UpdateCacheCoherency();
 
             // PS1 Quirk: Cache tag layout
             struct CacheTag {

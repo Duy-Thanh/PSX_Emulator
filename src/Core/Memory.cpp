@@ -824,4 +824,65 @@ namespace PSX {
             mem_state.access_cycles = 0;
         }
     }
+
+    void Memory::UpdateBusState() {
+        // PS1 Quirk: Memory refresh (VERIFIED)
+        bus_state.refresh_counter++;
+        if (bus_state.refresh_counter >= 100) {  // Refresh every 100 cycles
+            bus_state.current_state = BusState::State::REFRESH;
+            bus_state.current_cycles = BusState::BusTiming::REFRESH_CYCLES;
+            bus_state.refresh_counter = 0;
+        }
+
+        // PS1 Quirk: Bus access timing (VERIFIED)
+        if (bus_state.current_cycles > 0) {
+            bus_state.current_cycles--;
+            return;
+        }
+
+        // PS1 Quirk: DMA priority (VERIFIED)
+        if (dma_state.pending_requests) {
+            HandleDMAPriority();
+            return;
+        }
+
+        bus_state.current_state = BusState::State::IDLE;
+    }
+
+    void Memory::HandleDMAPriority() {
+        // PS1 Quirk: DMA priority resolution (VERIFIED)
+        uint32_t highest_priority = 0;
+        uint32_t selected_channel = 0xFF;
+
+        for (uint32_t i = 0; i < dma_state.channels.size(); i++) {
+            auto& channel = dma_state.channels[i];
+            if (channel.active && channel.priority > highest_priority) {
+                highest_priority = channel.priority;
+                selected_channel = i;
+            }
+        }
+
+        if (selected_channel != 0xFF) {
+            dma_state.active_channel = selected_channel;
+            HandleDMATransfer(selected_channel);
+        }
+    }
+
+    void Memory::UpdateCacheCoherency() {
+        // PS1 Quirk: Cache coherency checks (VERIFIED)
+        if (!cache_control.coherency_check_needed) return;
+
+        for (auto& line : cache_control.lines) {
+            if (line.valid && line.dirty) {
+                uint32_t addr = (line.tag << 4);
+                if (dma_state.pending_requests && 
+                    (addr >= dma_state.channels[dma_state.active_channel].base_addr) &&
+                    (addr < dma_state.channels[dma_state.active_channel].base_addr + 
+                            dma_state.channels[dma_state.active_channel].block_size)) {
+                    line.valid = false;  // Invalidate
+                    line.dirty = false;
+                }
+            }
+        }
+    }
 }

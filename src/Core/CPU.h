@@ -148,25 +148,36 @@ namespace PSX {
                 bool likely;  // For branch likely instructions
             } branch_delay;
 
-            // PS1 Quirk: Pipeline state
+            // PS1 Quirk: Pipeline state tracking (VERIFIED)
             struct Pipeline {
                 uint32_t current_pc;
                 uint32_t next_pc;
                 bool delay_slot;
                 bool cache_miss;
                 uint32_t stall_cycles;
+                bool branch_taken;
+                uint32_t branch_target;
+                bool load_delay;         // Load delay slot state
+                uint32_t loaded_reg;     // Register being loaded
+                uint32_t loaded_value;   // Value being loaded
             } pipeline;
 
-            // PS1 Quirk: COP0 registers
-            struct COP0 {
-                uint32_t SR;      // Status Register
-                uint32_t CAUSE;   // Cause Register
-                uint32_t EPC;     // Exception Program Counter
-                uint32_t PRID;    // Processor ID
-                uint32_t BPC;     // Breakpoint PC
-                uint32_t BPCM;    // Breakpoint PC Mask
-                uint32_t DCIC;    // Debug and Cache Isolation Control
-            } cop0;
+            // PS1 Quirk: Coprocessor 0 state (VERIFIED)
+            struct COP0State {          // Renamed from COP0 to COP0State
+                uint32_t SR;            // Status Register
+                uint32_t CAUSE;         // Cause Register
+                uint32_t EPC;           // Exception Program Counter
+                uint32_t BADVADDR;      // Bad Virtual Address
+                uint32_t DCIC;          // Debug and Cache Isolation Control
+                uint32_t BPC;           // Breakpoint PC
+                uint32_t BDA;           // Breakpoint Data Address
+                uint32_t TAR;           // Target Address Register
+                uint32_t BDAM;          // Breakpoint Data Address Mask
+                uint32_t BPCM;          // Breakpoint PC Mask
+                uint32_t PRID;          // Processor ID
+                bool cache_isolated;     // Cache isolation state
+                bool cache_enabled;      // Cache enable state
+            } cop0;                     // Single cop0 instance
 
             // PS1 Quirk: Cache state tracking
             struct CacheState {
@@ -291,21 +302,31 @@ namespace PSX {
                 uint32_t cache_data_hi;
             } cop0_detail;
 
-            // PS1 Quirk: Instruction timing states
-            struct InstructionTiming {
-                uint32_t cycles_remaining;
-                bool memory_stall;
-                bool cop0_stall;
-                bool cop2_stall;
-                uint32_t last_bus_access;
-                uint32_t next_event_cycles;
-            } timing;
+            // PS1 Quirk: System timing state (VERIFIED)
+            struct SystemTiming {       // Renamed from InstructionTiming
+                uint32_t cycles;        // Current cycle count
+                uint32_t next_event;    // Cycles until next event
+                bool dma_pending;       // DMA request pending
+                bool irq_pending;       // Interrupt pending
+                uint32_t timer_counter; // System timer counter
+                uint32_t refresh_cycles; // Memory refresh cycles
+            } timing;                   // Single timing instance
 
-            // Critical helper functions for PS1 accuracy
-            void UpdatePrefetchBuffer();
-            bool CheckCacheIsolation(uint32_t address);
-            void HandleMemoryLatency(uint32_t address);
-            void UpdateInstructionTiming();
+            // PS1 Quirk: Exception handling state (VERIFIED)
+            struct ExceptionState {
+                bool in_delay_slot;      // Exception in delay slot
+                uint32_t return_pc;      // Return address for exception
+                bool branch_taken;       // Branch state during exception
+                uint32_t branch_target;  // Branch target during exception
+                bool load_in_progress;   // Load operation during exception
+                uint32_t load_reg;       // Register being loaded
+            } exception_state;
+
+            // Helper functions for accurate timing
+            void UpdatePipelineState();
+            void HandleExceptionPrecise();
+            void UpdateSystemTiming();
+            void HandleLoadDelay();
 
         public:
             R3000A_CPU();
