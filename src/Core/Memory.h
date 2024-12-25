@@ -33,6 +33,9 @@ namespace PSX {
                 uint32_t chop_count;   // Number of chops performed
                 uint32_t chop_dma;     // DMA timing between chops
                 uint32_t chop_cpu;     // CPU timing between chops
+                bool chopping_enabled;
+                uint32_t chop_cpu_window;
+                uint32_t transfer_size;
             };
 
             // Hardware components (moved to single location)

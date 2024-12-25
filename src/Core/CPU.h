@@ -132,54 +132,41 @@ namespace PSX {
             static constexpr uint32_t EXCEPTION_CPU    = 11;  // Coprocessor unusable
             static constexpr uint32_t EXCEPTION_OV     = 12;  // Arithmetic overflow
 
-            // PS1 Quirk: Load delay slot handling (merged version)
+            // PS1 Quirk: Load delay slot handling
             struct LoadDelay {
                 uint8_t reg;
                 uint32_t value;
                 uint32_t old_value;
                 bool active;
-                bool is_load_linked;    // For LL/SC instructions
-                uint32_t linked_address;
             } load_delay;
 
-            // PS1 Quirk: Branch delay with prediction (merged version)
+            // PS1 Quirk: Branch delay slot handling
             struct BranchDelay {
                 uint32_t target;
                 bool active;
                 bool predicted;
-                uint32_t source_pc;
-                bool is_likely;         // For branch likely instructions
-                uint8_t branch_type;    // Track type of branch for timing
+                bool likely;  // For branch likely instructions
             } branch_delay;
 
-            // PS1 Quirk: COP0 state with detailed fields (merged version)
-            struct COP0State {
-                uint32_t SR;           // Status Register
-                uint32_t CAUSE;        // Cause Register
-                uint32_t EPC;          // Exception Program Counter
-                uint32_t PRID;         // Processor ID
-                uint32_t BadVAddr;     // Bad Virtual Address
-                uint32_t DCIC;         // Debug and Cache Isolation Control
-                uint32_t BPC;          // Breakpoint PC
-                uint32_t BDA;          // Breakpoint Data Address
-                uint32_t JUMPDEST;     // Jump Destination
-                uint32_t BDAM;         // Data Address Breakpoint Mask
-                uint32_t BPCM;         // PC Breakpoint Mask
-            } cop0;
-
-            // PS1 Quirk: Pipeline state tracking
+            // PS1 Quirk: Pipeline state
             struct Pipeline {
                 uint32_t current_pc;
                 uint32_t next_pc;
-                bool branch_taken;
                 bool delay_slot;
                 bool cache_miss;
                 uint32_t stall_cycles;
-                bool in_exception;
-                bool in_interrupt;
-                uint32_t last_branch_target;
-                uint8_t branch_likely_mode;
             } pipeline;
+
+            // PS1 Quirk: COP0 registers
+            struct COP0 {
+                uint32_t SR;      // Status Register
+                uint32_t CAUSE;   // Cause Register
+                uint32_t EPC;     // Exception Program Counter
+                uint32_t PRID;    // Processor ID
+                uint32_t BPC;     // Breakpoint PC
+                uint32_t BPCM;    // Breakpoint PC Mask
+                uint32_t DCIC;    // Debug and Cache Isolation Control
+            } cop0;
 
             // PS1 Quirk: Cache state tracking
             struct CacheState {

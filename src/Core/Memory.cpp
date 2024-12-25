@@ -134,17 +134,30 @@ namespace PSX {
     }
 
     uint32_t Memory::Read32(uint32_t address) {
-        // PS1 Quirk: Unaligned reads wrap within the same word
+        // PS1 Quirk: Memory access timing
+        uint32_t cycles = 0;
+        
+        if (address < RAM_SIZE) {
+            cycles = 5;  // RAM access time
+        } else if (address >= BIOS_START && address < (BIOS_START + BIOS_SIZE)) {
+            cycles = 8;  // ROM access time
+        } else if (address >= IO_BASE && address < (IO_BASE + IO_SIZE)) {
+            cycles = 12; // I/O access time
+        }
+        
+        timing.dma_cycles += cycles;
+        
+        // PS1 Quirk: Memory mirroring and actual read
+        uint32_t masked_addr = TranslateAddress(address);
+        
+        // PS1 Quirk: Unaligned reads rotate within word
         if (address & 3) {
             uint32_t aligned = address & ~3;
             uint32_t shift = (address & 3) * 8;
             uint32_t data = Read32(aligned);
-            return (data >> shift) | (data << (32 - shift));  // Rotates within word!
+            return (data >> shift) | (data << (32 - shift));
         }
         
-        // PS1 Quirk: Memory mirroring in KUSEG/KSEG0/KSEG1
-        address = TranslateAddress(address);
-
         // PS1 Quirk: Cache behavior during DMA
         if (dma_active && IsCacheable(address)) {
             InvalidateCacheLine(address);
@@ -180,7 +193,7 @@ namespace PSX {
         address = TranslateAddress(address);
         
         // PS1 Quirk: Memory mirroring in RAM region
-        uint32_t masked_addr = TranslateAddress(address);
+        masked_addr = TranslateAddress(address);
         if (masked_addr < RAM_SIZE) {
             masked_addr &= RAM_MASK;
             return *(uint32_t*)&ram[masked_addr];
@@ -645,19 +658,22 @@ namespace PSX {
 
     void Memory::HandleDMATransfer(uint32_t channel) {
         auto& dma = dma_channels[channel];
-
-        // PS1 Quirk: DMA choking behavior
-        if (dma.chop_size > 0) {
-            uint32_t chop_blocks = std::min(dma.block_size, dma.chop_size);
-            dma.chop_count++;
+        
+        // PS1 Quirk: DMA priority and chopping
+        if (dma.chopping_enabled) {
+            uint32_t chop_size = std::min(dma.block_size, dma.chop_size);
             
-            if (dma.chop_count >= dma.control & 0x7) {
-                // Pause DMA for other devices
-                dma.active = false;
+            // PS1 Quirk: Allow CPU to run between chops
+            timing.dma_cycles += chop_size * 4;  // 4 cycles per word
+            timing.gpu_cycles += dma.chop_cpu_window;
+            
+            dma.block_size -= chop_size;
+            if (dma.block_size > 0) {
+                // Schedule next chop
                 return;
             }
         }
-
+        
         // PS1 Quirk: DMA to GPU must respect GPU ready state
         if (channel == 2 && gpu) {  // GPU DMA
             if (!gpu->IsReadyForDMA()) {
