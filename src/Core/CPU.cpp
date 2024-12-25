@@ -87,12 +87,22 @@ namespace PSX {
     }
 
     void R3000A_CPU::DecodeAndExecute(uint32_t instruction) {
-        // PS1 Quirk: Load delay slot behavior
+        // PS1 Quirk: Load delay slots can interact with each other
+        LoadDelay next_load = {0, 0, 0, false};
+        
+        // PS1 Quirk: Load delay value is captured at the start of the next instruction
         if (load_delay.active) {
-            if (load_delay.reg != 0) {  // R0 is always zero
-                SetRegister(load_delay.reg, load_delay.value);
+            uint32_t old_value = GetRegister(load_delay.reg);
+            SetRegister(load_delay.reg, load_delay.value);
+            load_delay.old_value = old_value;  // Save for potential rollback
+        }
+
+        // PS1 Quirk: Load delay can be overwritten by another load
+        if (IsLoadInstruction(instruction)) {
+            if (load_delay.active && load_delay.reg == GetRt(instruction)) {
+                // Second load to same register cancels first load's effect
+                SetRegister(load_delay.reg, load_delay.old_value);
             }
-            load_delay.active = false;
         }
 
         // PS1 Quirk: Branch delay slot behavior
@@ -556,14 +566,21 @@ namespace PSX {
     }
 
     void R3000A_CPU::HandleInterrupt() {
-        // Save current PC to EPC
-        cop0.EPC = cpu->PC;
+        // PS1 Quirk: Interrupts can occur in branch delay slots
+        bool in_delay = branch_delay.active;
         
-        // Update Status Register
-        cop0.SR |= 0x2;  // Set EXL bit
+        // PS1 Quirk: Save current PC before handling interrupt
+        cop0.EPC = in_delay ? (cpu->PC - 4) : cpu->PC;
         
-        // Jump to interrupt vector
-        cpu->PC = 0x80000080;
+        // PS1 Quirk: Set BD bit in Cause register if in delay slot
+        if (in_delay) {
+            cop0.CAUSE |= (1 << 31);
+        } else {
+            cop0.CAUSE &= ~(1 << 31);
+        }
+
+        // PS1 Quirk: Interrupts disable further interrupts
+        cop0.SR |= (1 << 1);  // Set EXL bit
     }
 
     void R3000A_CPU::HandleException(uint32_t excode) {

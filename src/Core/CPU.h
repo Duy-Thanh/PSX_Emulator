@@ -228,6 +228,98 @@ namespace PSX {
             // PS1 Cause Register bit positions
             static constexpr uint32_t CAUSE_BD = 31;  // Branch Delay slot
 
+            // Instruction decode helpers
+            bool IsLoadInstruction(uint32_t instruction) const {
+                uint8_t opcode = (instruction >> 26) & 0x3F;
+                return (opcode == 0x20 ||  // LB
+                        opcode == 0x21 ||  // LH
+                        opcode == 0x22 ||  // LWL
+                        opcode == 0x23 ||  // LW
+                        opcode == 0x24 ||  // LBU
+                        opcode == 0x25 ||  // LHU
+                        opcode == 0x26);   // LWR
+            }
+
+            uint8_t GetRt(uint32_t instruction) const {
+                return (instruction >> 16) & 0x1F;
+            }
+
+            uint8_t GetRs(uint32_t instruction) const {
+                return (instruction >> 21) & 0x1F;
+            }
+
+            uint8_t GetRd(uint32_t instruction) const {
+                return (instruction >> 11) & 0x1F;
+            }
+
+            uint8_t GetShamt(uint32_t instruction) const {
+                return (instruction >> 6) & 0x1F;
+            }
+
+            uint8_t GetFunct(uint32_t instruction) const {
+                return instruction & 0x3F;
+            }
+
+            uint16_t GetImmediate(uint32_t instruction) const {
+                return instruction & 0xFFFF;
+            }
+
+            uint32_t GetTarget(uint32_t instruction) const {
+                return instruction & 0x3FFFFFF;
+            }
+
+            // PS1 Quirk: Special instruction detection
+            bool IsNopInstruction(uint32_t instruction) const {
+                return instruction == 0;
+            }
+
+            bool IsBranchInstruction(uint32_t instruction) const {
+                uint8_t opcode = (instruction >> 26) & 0x3F;
+                return (opcode >= 0x04 && opcode <= 0x07) || // BEQ, BNE, BLEZ, BGTZ
+                       (opcode == 0x01);                      // BGEZ, BLTZ, etc
+            }
+
+            bool IsJumpInstruction(uint32_t instruction) const {
+                uint8_t opcode = (instruction >> 26) & 0x3F;
+                return opcode == 0x02 || opcode == 0x03;     // J, JAL
+            }
+
+            // PS1 Quirk: Instruction prefetch buffer
+            struct PrefetchBuffer {
+                uint32_t instructions[4];
+                uint32_t pc[4];
+                int count;
+                bool valid[4];
+            } prefetch;
+
+            // PS1 Quirk: Coprocessor 0 detailed implementation
+            struct COP0Detail {
+                bool cache_isolation_enabled;
+                bool cache_enable_bit;
+                bool scratchpad_enable_bit;
+                uint32_t cache_control;
+                uint32_t cache_tag_lo;
+                uint32_t cache_tag_hi;
+                uint32_t cache_data_lo;
+                uint32_t cache_data_hi;
+            } cop0_detail;
+
+            // PS1 Quirk: Instruction timing states
+            struct InstructionTiming {
+                uint32_t cycles_remaining;
+                bool memory_stall;
+                bool cop0_stall;
+                bool cop2_stall;
+                uint32_t last_bus_access;
+                uint32_t next_event_cycles;
+            } timing;
+
+            // Critical helper functions for PS1 accuracy
+            void UpdatePrefetchBuffer();
+            bool CheckCacheIsolation(uint32_t address);
+            void HandleMemoryLatency(uint32_t address);
+            void UpdateInstructionTiming();
+
         public:
             R3000A_CPU();
             ~R3000A_CPU();

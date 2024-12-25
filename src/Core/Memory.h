@@ -41,14 +41,6 @@ namespace PSX {
             SPU* spu;
             CDROM* cdrom;
 
-            // Memory timing structure (single definition)
-            struct MemoryTiming {
-                uint32_t access_cycles;
-                uint32_t dma_cycles;
-                uint32_t gpu_cycles;
-                uint32_t spu_cycles;
-                uint32_t cdrom_cycles;
-            } timing;
 
             // Memory arrays
             std::array<uint8_t, 2 * 1024 * 1024> ram;    // 2MB RAM
@@ -212,6 +204,56 @@ namespace PSX {
 
             // DMA Channels array (7 channels for PS1)
             std::array<DMAChannel, 7> dma_channels;
+
+            // Add these crucial cache isolation behaviors
+            struct CacheState {
+                bool scratchpad_enabled;
+                bool cache_isolated;
+                bool force_icache_miss;    // Forces instruction cache misses
+                bool force_dcache_miss;    // Forces data cache misses
+                uint32_t iso_base;         // Base address in isolated cache mode
+                std::array<uint8_t, 1024> isolated_cache;  // Separate storage for isolated cache
+            };
+
+            // PS1 Quirk: Memory access timing details
+            struct MemoryTiming {
+                uint32_t ram_access_time;
+                uint32_t rom_access_time;
+                uint32_t io_access_time;
+                uint32_t dma_transfer_time;
+                bool ram_busy;
+                bool rom_busy;
+                bool io_busy;
+                uint32_t last_access_cycle;
+            } mem_timing;
+
+            // PS1 Quirk: DMA detailed behavior
+            struct DMADetail {
+                bool chopping_enabled;
+                uint32_t chop_dma_window;
+                uint32_t chop_cpu_window;
+                uint32_t transfer_size;
+                bool sync_mode;
+                bool channel_enable;
+                uint32_t priority;
+            };
+            std::array<DMADetail, 7> dma_detail;
+
+            // PS1 Quirk: Memory mirroring details
+            struct MirrorState {
+                uint32_t ram_size_mask;
+                uint32_t scratchpad_mask;
+                uint32_t bios_mask;
+                bool ram_mirroring_enabled;
+            } mirror_state;
+
+            // PS1 Quirk: Memory timing counters
+            struct TimingCounters {
+                uint32_t gpu_cycles;
+                uint32_t spu_cycles;
+                uint32_t cdrom_cycles;
+                uint32_t dma_cycles;
+            } timing;
 
             void UpdateTiming();
 

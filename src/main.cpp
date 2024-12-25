@@ -53,8 +53,6 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    SDL_Delay(1000);
-
     SDL_DestroyWindow(window);
     SDL_Quit();
 

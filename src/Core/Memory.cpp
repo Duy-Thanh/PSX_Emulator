@@ -52,6 +52,12 @@ namespace PSX {
         spu_control = 0;
         
         InitDMAChannels();
+
+        // Reset timing counters
+        timing.gpu_cycles = 0;
+        timing.spu_cycles = 0;
+        timing.cdrom_cycles = 0;
+        timing.dma_cycles = 0;
     }
 
     bool Memory::LoadBIOS(const std::string& path) {
@@ -134,6 +140,14 @@ namespace PSX {
             uint32_t shift = (address & 3) * 8;
             uint32_t data = Read32(aligned);
             return (data >> shift) | (data << (32 - shift));  // Rotates within word!
+        }
+        
+        // PS1 Quirk: Memory mirroring in KUSEG/KSEG0/KSEG1
+        address = TranslateAddress(address);
+
+        // PS1 Quirk: Cache behavior during DMA
+        if (dma_active && IsCacheable(address)) {
+            InvalidateCacheLine(address);
         }
         
         // PS1 Quirk: Memory wrapping
