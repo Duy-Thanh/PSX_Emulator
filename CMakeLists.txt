@@ -105,4 +105,4 @@ endfunction()
 # Then use it after SDL2 setup
 add_subdirectory(deps/SDL2)
 target_link_libraries(PSXEmulator PRIVATE SDL2)
-copy_runtime_dlls()
+# copy_runtime_dlls()
