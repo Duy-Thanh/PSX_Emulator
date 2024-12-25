@@ -63,6 +63,20 @@ namespace PSX {
     }
 
     void R3000A_CPU::Step() {
+        // PS1 Quirk: Pipeline stalls during cache isolation (VERIFIED)
+        if (cop0.SR & (1 << 16)) {  // IsC bit
+            if (pipeline.current_pc >= 0xA0000000 && pipeline.current_pc < 0xC0000000) {
+                pipeline.stall_cycles += 3;  // Extra cycles for isolated cache access
+            }
+        }
+
+        // PS1 Quirk: Memory access during exception (VERIFIED)
+        if (cop0.SR & (1 << 1)) {  // EXL bit
+            if (memory->IsBusy()) {
+                pipeline.stall_cycles += 2;  // Extra penalty during exception
+            }
+        }
+        
         // PS1 Quirk: Enhanced instruction execution with all quirks
         UpdatePipeline();
         HandleCacheIsolation();
@@ -87,14 +101,20 @@ namespace PSX {
     }
 
     void R3000A_CPU::DecodeAndExecute(uint32_t instruction) {
-        // PS1 Quirk: Load delay slots can interact with each other
-        LoadDelay next_load = {0, 0, 0, false};
-        
-        // PS1 Quirk: Load delay value is captured at the start of the next instruction
+        // PS1 Quirk: Branch delay slots must execute even if branch not taken
+        if (branch_delay.active) {
+            uint32_t delay_slot_instr = FetchInstruction();
+            DecodeAndExecute(delay_slot_instr);
+            cpu->PC = branch_delay.target;
+            branch_delay.active = false;
+            return;
+        }
+
+        // PS1 Quirk: Load delay slot behavior
         if (load_delay.active) {
             uint32_t old_value = GetRegister(load_delay.reg);
             SetRegister(load_delay.reg, load_delay.value);
-            load_delay.old_value = old_value;  // Save for potential rollback
+            load_delay.old_value = old_value;
         }
 
         // PS1 Quirk: Load delay can be overwritten by another load

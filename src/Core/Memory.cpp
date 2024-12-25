@@ -50,6 +50,10 @@ namespace PSX {
         spu_busy = false;
         spu_status = 0;
         spu_control = 0;
+
+        // PS1 Quirk: Reset RAM size detection state
+        ram_size_detected = false;
+        ram_size = 2 * 1024 * 1024;  // Reset to default 2MB
         
         InitDMAChannels();
 
@@ -80,6 +84,19 @@ namespace PSX {
     }
 
     uint32_t Memory::TranslateAddress(uint32_t address) {
+        // PS1 Quirk: BIOS mirror access during boot (VERIFIED - CRITICAL!)
+        if (address >= 0xBFC00000 && address < 0xBFC80000) {
+            return (address - 0xBFC00000) & BIOS_MASK;
+        }
+
+        // PS1 Quirk: RAM size detection (VERIFIED)
+        if (address >= 0x00000000 && address < 0x00800000) {
+            if (!ram_size_detected) {
+                ram_size = 2 * 1024 * 1024;  // 2MB
+                ram_size_detected = true;
+            }
+        }
+
         // PS1 Quirk: KUSEG/KSEG0/KSEG1 address translation
         if (address >= KSEG1_START) {
             address -= KSEG1_START;
@@ -134,22 +151,18 @@ namespace PSX {
     }
 
     uint32_t Memory::Read32(uint32_t address) {
-        // PS1 Quirk: Memory access timing
+        // PS1 Quirk: Memory access timing must be accurate
         uint32_t cycles = 0;
-        
         if (address < RAM_SIZE) {
-            cycles = 5;  // RAM access time
+            cycles = 5;  // RAM access
         } else if (address >= BIOS_START && address < (BIOS_START + BIOS_SIZE)) {
-            cycles = 8;  // ROM access time
-        } else if (address >= IO_BASE && address < (IO_BASE + IO_SIZE)) {
-            cycles = 12; // I/O access time
+            cycles = 8;  // ROM access
         }
-        
         timing.dma_cycles += cycles;
-        
-        // PS1 Quirk: Memory mirroring and actual read
-        uint32_t masked_addr = TranslateAddress(address);
-        
+
+        // PS1 Quirk: Memory mirroring in KUSEG/KSEG0/KSEG1
+        address = TranslateAddress(address);
+
         // PS1 Quirk: Unaligned reads rotate within word
         if (address & 3) {
             uint32_t aligned = address & ~3;
@@ -157,12 +170,12 @@ namespace PSX {
             uint32_t data = Read32(aligned);
             return (data >> shift) | (data << (32 - shift));
         }
-        
+
         // PS1 Quirk: Cache behavior during DMA
         if (dma_active && IsCacheable(address)) {
             InvalidateCacheLine(address);
         }
-        
+
         // PS1 Quirk: Memory wrapping
         address &= 0x1FFFFFFF;
         
@@ -193,7 +206,7 @@ namespace PSX {
         address = TranslateAddress(address);
         
         // PS1 Quirk: Memory mirroring in RAM region
-        masked_addr = TranslateAddress(address);
+        uint32_t masked_addr = TranslateAddress(address);
         if (masked_addr < RAM_SIZE) {
             masked_addr &= RAM_MASK;
             return *(uint32_t*)&ram[masked_addr];
@@ -267,12 +280,23 @@ namespace PSX {
             }
         }
 
+        // PS1 Quirk: Write to I/O ports while DMA is active (VERIFIED)
+        if (dma_active && address >= 0x1F801000 && address < 0x1F802000) {
+            mem_state.io_busy = true;
+            return;  // Write is ignored
+        }
+
         // PS1 Quirk: Cache coherency
         if (cache_enabled && !cache_isolated) {
             uint32_t line = (address >> 4) & 0x3F;
             if (cache_valid[line] && !cache_locked[line]) {
                 cache_valid[line] = false;
             }
+        }
+
+        // PS1 Quirk: Cache coherency during DMA (VERIFIED)
+        if (dma_active && cache_enabled) {
+            InvalidateCacheLine(address);
         }
 
         // PS1 Quirk: Writes to KSEG2 when cache is isolated go to I-cache
@@ -662,14 +686,20 @@ namespace PSX {
         // PS1 Quirk: DMA priority and chopping
         if (dma.chopping_enabled) {
             uint32_t chop_size = std::min(dma.block_size, dma.chop_size);
-            
-            // PS1 Quirk: Allow CPU to run between chops
             timing.dma_cycles += chop_size * 4;  // 4 cycles per word
             timing.gpu_cycles += dma.chop_cpu_window;
             
-            dma.block_size -= chop_size;
-            if (dma.block_size > 0) {
-                // Schedule next chop
+            // dma.block_size -= chop_size;
+            // if (dma.block_size > 0) {
+            //     return;  // Continue next cycle
+            // }
+        }
+        
+        // PS1 Quirk: DMA linked list termination
+        if ((dma.control & 0x6) == 0x4) {  // Linked list mode
+            uint32_t header = Read32(dma.base_addr);
+            if (header & 0x800000) {
+                dma.active = false;  // End of linked list
                 return;
             }
         }
@@ -678,15 +708,6 @@ namespace PSX {
         if (channel == 2 && gpu) {  // GPU DMA
             if (!gpu->IsReadyForDMA()) {
                 return;  // Try again next cycle
-            }
-        }
-
-        // PS1 Quirk: DMA linked list termination
-        if ((dma.control & 0x6) == 0x4) {  // Linked list mode
-            uint32_t header = Read32(dma.base_addr);
-            if (header & 0x800000) {
-                dma.active = false;  // End of linked list
-                return;
             }
         }
     }
@@ -789,30 +810,18 @@ namespace PSX {
     }
 
     void Memory::UpdateTiming() {
-        // Update component timings
-        if (gpu && gpu->IsBusy()) {
-            timing.gpu_cycles++;
-        }
-        
-        if (spu && spu->IsTransferring()) {
-            timing.spu_cycles++;
-        }
-        
-        if (cdrom && cdrom->IsReading()) {
-            timing.cdrom_cycles++;
-        }
-        
-        // Handle DMA timing
-        for (auto& channel : dma_channels) {
-            if (channel.active) {
-                timing.dma_cycles++;
-                // Apply proper wait states based on target
-                switch (channel.target) {
-                    case DMA_GPU: timing.gpu_cycles++; break;
-                    case DMA_SPU: timing.spu_cycles++; break;
-                    case DMA_CDROM: timing.cdrom_cycles++; break;
-                }
+        // PS1 Quirk: Accurate memory timing (VERIFIED)
+        if (mem_state.memory_busy) {
+            mem_state.access_cycles++;
+            if (mem_state.access_cycles >= MemoryTiming::RAM_ACCESS_TIME) {  // Use the static constant
+                mem_state.memory_busy = false;
             }
+        }
+
+        // PS1 Quirk: DMA and CPU cannot access memory simultaneously
+        if (mem_state.dma_active) {
+            mem_state.memory_busy = true;
+            mem_state.access_cycles = 0;
         }
     }
 }

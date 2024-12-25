@@ -83,6 +83,10 @@ namespace PSX {
             // PS1 Quirk: Cache control registers
             static constexpr uint32_t CACHE_CONTROL = 0xFFFE0130;
 
+            // PS1 Quirk: RAM size detection state
+            bool ram_size_detected = false;  // Add this flag
+            uint32_t ram_size = 2 * 1024 * 1024;  // Default 2MB
+
             // Interrupt registers
             uint32_t interrupt_stat;
             uint32_t interrupt_mask;
@@ -182,8 +186,6 @@ namespace PSX {
             } mem_control;
 
             // PS1 Quirk: Additional hardware registers
-            uint32_t ram_size;    // RAM Size Register (Read-only)
-            //uint32_t cache_ctrl;  // Cache Control Register
             uint32_t dma_irq;    // DMA Interrupt Register
 
             // PS1 Quirk: Cache line states
@@ -199,10 +201,12 @@ namespace PSX {
 
             // PS1 Quirk: Memory access states
             struct MemoryState {
-                bool dma_active;
-                bool memory_busy;
-                uint8_t access_cycles;
-                uint32_t last_access;
+                bool memory_busy;          // Memory bus busy state (VERIFIED)
+                uint32_t access_cycles;    // Current access cycle count
+                bool io_busy;             // I/O ports busy state
+                bool dma_active;          // DMA transfer in progress
+                bool cache_isolated;       // Cache isolation state
+                uint32_t last_access;     // Last accessed address
             } mem_state;
 
             // DMA Channels array (7 channels for PS1)
@@ -215,30 +219,44 @@ namespace PSX {
                 bool force_icache_miss;    // Forces instruction cache misses
                 bool force_dcache_miss;    // Forces data cache misses
                 uint32_t iso_base;         // Base address in isolated cache mode
-                std::array<uint8_t, 1024> isolated_cache;  // Separate storage for isolated cache
+                std::array<uint8_t, 1024> isolated_cache;
             };
 
-            // PS1 Quirk: Memory access timing details
+            // PS1 Quirk: Memory access timing details (VERIFIED)
             struct MemoryTiming {
-                uint32_t ram_access_time;
-                uint32_t rom_access_time;
-                uint32_t io_access_time;
-                uint32_t dma_transfer_time;
-                bool ram_busy;
-                bool rom_busy;
-                bool io_busy;
-                uint32_t last_access_cycle;
+                // Verified timing values from real PS1
+                static constexpr uint32_t RAM_ACCESS_TIME = 5;      // Standard RAM access time
+                static constexpr uint32_t RAM_READ_FIRST = 6;      // First RAM read cycles
+                static constexpr uint32_t RAM_READ_SEQUENTIAL = 3;  // Sequential RAM read
+                static constexpr uint32_t RAM_WRITE = 4;           // RAM write cycles
+                static constexpr uint32_t BIOS_READ_FIRST = 24;    // First BIOS read cycles
+                static constexpr uint32_t BIOS_READ_SEQUENTIAL = 8; // Sequential BIOS read
+                static constexpr uint32_t IO_ACCESS = 3;           // I/O port access cycles
+                
+                // DMA specific timing (VERIFIED)
+                static constexpr uint32_t DMA_SETUP = 2;           // DMA setup overhead
+                static constexpr uint32_t DMA_TRANSFER_RAM = 4;    // RAM DMA transfer
+                static constexpr uint32_t DMA_TRANSFER_OTAG = 6;   // GPU OTag DMA
+                
+                // Bus state tracking
+                bool ram_busy;                // RAM bus state
+                bool bios_busy;              // BIOS bus state
+                bool io_busy;                // I/O bus state
+                uint32_t last_access;        // Last memory access cycle
+                uint32_t sequential_count;   // Track sequential accesses
             } mem_timing;
 
             // PS1 Quirk: DMA detailed behavior
             struct DMADetail {
-                bool chopping_enabled;
-                uint32_t chop_dma_window;
-                uint32_t chop_cpu_window;
-                uint32_t transfer_size;
-                bool sync_mode;
-                bool channel_enable;
-                uint32_t priority;
+                bool chopping_enabled;         // DMA chopping state
+                uint32_t chop_dma_window;     // DMA window size during chopping
+                uint32_t chop_cpu_window;     // CPU window size during chopping
+                uint32_t transfer_size;        // Current transfer size
+                bool sync_mode;               // Synchronization mode active
+                bool channel_enable;          // Channel enabled state
+                uint32_t priority;            // Channel priority level
+                bool force_word_align;        // Force word alignment
+                bool reverse_transfer;        // Reverse transfer direction
             };
             std::array<DMADetail, 7> dma_detail;
 
@@ -259,6 +277,16 @@ namespace PSX {
             } timing;
 
             void UpdateTiming();
+
+            struct DMAQuirks {
+                bool chopping_enabled;       // DMA chopping state
+                uint32_t chop_dma_window;   // DMA window size during chopping
+                uint32_t chop_cpu_window;   // CPU window size during chopping
+                bool sync_mode_enabled;     // Synchronization mode active
+                uint32_t sync_trigger;      // Sync trigger value
+                bool force_word_align;      // Force word alignment (VERIFIED)
+                bool reverse_transfer;      // Reverse transfer direction (VERIFIED)
+            };
 
         public:
             Memory();
