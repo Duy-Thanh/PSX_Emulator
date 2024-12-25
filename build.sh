@@ -1,3 +1,5 @@
+#!/bin/bash
+
 export CURRENT_DIRECTORY=$PWD
 
 mkdir build
