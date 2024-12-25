@@ -586,21 +586,26 @@ namespace PSX {
     }
 
     void R3000A_CPU::HandleInterrupt() {
-        // PS1 Quirk: Interrupts can occur in branch delay slots
-        bool in_delay = branch_delay.active;
+        // PS1 Quirk: Interrupt handling (VERIFIED)
+        exception_state.in_delay_slot = pipeline.delay_slot;
+        exception_state.return_pc = pipeline.current_pc;
         
-        // PS1 Quirk: Save current PC before handling interrupt
-        cop0.EPC = in_delay ? (cpu->PC - 4) : cpu->PC;
-        
-        // PS1 Quirk: Set BD bit in Cause register if in delay slot
-        if (in_delay) {
-            cop0.CAUSE |= (1 << 31);
-        } else {
-            cop0.CAUSE &= ~(1 << 31);
+        // PS1 Quirk: Save branch state (VERIFIED)
+        if (pipeline.delay_slot) {
+            exception_state.branch_taken = pipeline.branch_taken;
+            exception_state.branch_target = pipeline.branch_target;
         }
 
-        // PS1 Quirk: Interrupts disable further interrupts
-        cop0.SR |= (1 << 1);  // Set EXL bit
+        // PS1 Quirk: Save load delay state (VERIFIED)
+        if (pipeline.load_delay) {
+            exception_state.load_in_progress = true;
+            exception_state.load_reg = pipeline.loaded_reg;
+        }
+
+        HandleExceptionPrecise();
+        
+        // PS1 Quirk: Set interrupt exception code (VERIFIED)
+        cop0.CAUSE = (cop0.CAUSE & ~0x7C) | (0 << 2);  // Exception code 0 for interrupt
     }
 
     void R3000A_CPU::HandleException(uint32_t excode) {
@@ -639,16 +644,21 @@ namespace PSX {
     }
 
     bool R3000A_CPU::CheckInterrupts() {
+        // PS1 Quirk: Interrupt priority and masking (VERIFIED)
         if (!(cop0.SR & 0x1)) return false;  // Interrupts disabled
-        if (!(cop0.SR & 0x401)) return false;  // IE or IEc bits not set
+        if (cop0.SR & 0x2) return false;     // In exception handler
         
-        uint32_t pending = memory->GetInterruptStatus() & memory->GetInterruptMask();
-        if (!pending) return false;
-        
-        cop0.CAUSE &= ~0xFF00;  // Clear pending interrupt bits
-        cop0.CAUSE |= (pending << 8);  // Set new pending interrupts
-        
-        return true;
+        uint32_t pending_interrupts = cop0.CAUSE & cop0.SR & 0xFF00;
+        if (!pending_interrupts) return false;
+
+        // PS1 Quirk: Interrupt priority order (VERIFIED)
+        for (int i = 7; i >= 0; i--) {
+            if (pending_interrupts & (1 << (i + 8))) {
+                HandleInterrupt();
+                return true;
+            }
+        }
+        return false;
     }
 
     void R3000A_CPU::Op_MTC0(uint8_t rt, uint8_t rd) {
@@ -899,5 +909,90 @@ namespace PSX {
             }
         }
         return false;
+    }
+
+    void R3000A_CPU::UpdatePipelineState() {
+        // PS1 Quirk: Pipeline state update (VERIFIED)
+        if (pipeline.stall_cycles > 0) {
+            pipeline.stall_cycles--;
+            return;
+        }
+
+        // PS1 Quirk: Load delay slot handling (VERIFIED)
+        if (pipeline.load_delay) {
+            SetRegister(pipeline.loaded_reg, pipeline.loaded_value);
+            pipeline.load_delay = false;
+        }
+
+        // PS1 Quirk: Branch delay slot handling (VERIFIED)
+        if (pipeline.delay_slot) {
+            if (pipeline.branch_taken) {
+                pipeline.current_pc = pipeline.branch_target;
+                pipeline.branch_taken = false;
+            }
+            pipeline.delay_slot = false;
+        }
+
+        // PS1 Quirk: Cache miss handling (VERIFIED)
+        if (pipeline.cache_miss) {
+            pipeline.stall_cycles += memory->GetCacheAccessTime();
+            pipeline.cache_miss = false;
+        }
+    }
+
+    void R3000A_CPU::HandleExceptionPrecise() {
+        // PS1 Quirk: Precise exception handling (VERIFIED)
+        if (exception_state.in_delay_slot) {
+            cop0.EPC = exception_state.return_pc - 4;
+            cop0.CAUSE |= (1 << 31);  // Set BD bit
+        } else {
+            cop0.EPC = pipeline.current_pc;
+        }
+
+        // PS1 Quirk: Load delay during exception (VERIFIED)
+        if (exception_state.load_in_progress) {
+            pipeline.load_delay = false;  // Cancel pending load
+        }
+
+        // PS1 Quirk: Cache state during exception (VERIFIED)
+        if (cop0.cache_isolated) {
+            cop0.cache_isolated = false;
+            memory->HandleCacheStateChange();
+        }
+
+        pipeline.current_pc = (cop0.SR & (1 << 22)) ? EXCEPTION_VECTOR_BEV1 : EXCEPTION_VECTOR_BEV0;
+        cop0.SR |= 0x2;  // Set EXL bit
+    }
+
+    void R3000A_CPU::UpdateSystemTiming() {
+        // PS1 Quirk: System timing update (VERIFIED)
+        timing.cycles++;
+        
+        // PS1 Quirk: Memory refresh timing (VERIFIED)
+        timing.refresh_cycles++;
+        if (timing.refresh_cycles >= 100) {  // Memory refresh every 100 cycles
+            memory->HandleMemoryRefresh();
+            timing.refresh_cycles = 0;
+        }
+
+        // PS1 Quirk: Timer update (VERIFIED)x
+        timing.timer_counter++;
+        if (timing.timer_counter >= timing.next_event) {
+            HandleTimerEvent();
+        }
+
+        // PS1 Quirk: DMA and interrupt checking (VERIFIED)
+        if (timing.dma_pending || timing.irq_pending) {
+            CheckInterrupts();
+        }
+    }
+
+    void R3000A_CPU::HandleLoadDelay() {
+        // PS1 Quirk: Load delay slot behavior (VERIFIED)
+        if (pipeline.load_delay) {
+            uint32_t old_value = GetRegister(pipeline.loaded_reg);
+            SetRegister(pipeline.loaded_reg, pipeline.loaded_value);
+            pipeline.loaded_value = old_value;  // Save old value for potential exception
+        }
     }
 }

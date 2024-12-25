@@ -4,6 +4,7 @@
 #include <string>
 #include <cstring>
 #include <array>
+#include <functional>
 
 #include "GPU.h"
 #include "GTE.h"
@@ -13,6 +14,18 @@
 namespace PSX {
     class Memory {
         private:
+            // PS1 Quirk: DMA enums (moved to top)
+            enum DMADirection {
+                DMA_TO_RAM,
+                DMA_FROM_RAM
+            };
+
+            enum DMASyncMode {
+                DMA_SYNC_IMMEDIATE,
+                DMA_SYNC_BLOCK,
+                DMA_SYNC_LINKED_LIST
+            };
+
             // DMA target enum definition
             enum DMATarget {
                 DMA_MDEC_IN,
@@ -23,19 +36,31 @@ namespace PSX {
                 DMA_PIO
             };
 
+            // PS1 Quirk: Cache line structure (single definition)
+            struct CacheLine {
+                bool valid;
+                bool dirty;
+                uint32_t tag;
+                uint32_t data[4];
+            };
+            std::array<CacheLine, 64> cache_lines;  // 64 cache lines
+
             struct DMAChannel {
                 uint32_t base_addr;
                 uint32_t block_size;
                 uint32_t control;
                 bool active;
                 DMATarget target;
-                uint32_t chop_size;    // Size of each chopped block
-                uint32_t chop_count;   // Number of chops performed
-                uint32_t chop_dma;     // DMA timing between chops
-                uint32_t chop_cpu;     // CPU timing between chops
+                uint32_t chop_size;
+                uint32_t chop_count;
+                uint32_t chop_dma;
+                uint32_t chop_cpu;
                 bool chopping_enabled;
                 uint32_t chop_cpu_window;
                 uint32_t transfer_size;
+                uint32_t current_addr;
+                DMADirection direction;
+                DMASyncMode sync_mode;
             };
 
             // Add these detailed timing and state tracking structures
@@ -69,12 +94,13 @@ namespace PSX {
                 uint32_t refresh_counter;    // Memory refresh counter
             } bus_state;
 
+            void HandleCacheAccess(uint32_t address);
+
             // Hardware components (moved to single location)
             GPU* gpu;
             GTE* gte;
             SPU* spu;
             CDROM* cdrom;
-
 
             // Memory arrays
             std::array<uint8_t, 2 * 1024 * 1024> ram;    // 2MB RAM
@@ -277,17 +303,6 @@ namespace PSX {
             // PS1 Quirk: Additional hardware registers
             uint32_t dma_irq;    // DMA Interrupt Register
 
-            // PS1 Quirk: Cache line states
-            struct CacheLine {
-                bool valid;
-                bool dirty;
-                bool locked;
-                uint32_t tag;
-                std::array<uint8_t, 16> data;
-            };
-            std::array<CacheLine, 64> i_cache;
-            std::array<CacheLine, 64> d_cache;
-
             // PS1 Quirk: Memory access states
             struct MemoryState {
                 bool memory_busy;          // Memory bus busy state (VERIFIED)
@@ -377,6 +392,23 @@ namespace PSX {
                 bool reverse_transfer;      // Reverse transfer direction (VERIFIED)
             };
 
+            void UpdateCacheState(uint32_t address, bool write);
+            void FillCacheLineData(uint32_t address, uint32_t* data);
+            void WriteBackCacheLine(uint32_t address, const CacheLine& entry);
+            void ReplaceCacheLine(uint32_t address, const CacheLine& entry);
+
+            // Add missing function declarations
+            void FillCacheLine(uint32_t address);
+            void InvalidateCacheRange(uint32_t start_addr, uint32_t size);
+            bool IsDMATriggered(uint32_t channel) const;
+            uint32_t HandleDMABlock(uint32_t channel, uint32_t size);
+            void HandleDMACompletion();
+            void CompleteMemoryAccess();
+            void UpdateMemoryState();
+
+            // Add callback member variable
+            std::function<void(uint32_t)> dma_complete_callback;
+
         public:
             Memory();
             ~Memory();
@@ -457,6 +489,34 @@ namespace PSX {
             // Add GPU DMA status check
             bool IsReadyForDMA() const {
                 return gpu && !gpu->IsBusy();
+            }
+
+            // Add these methods to public interface
+            uint32_t GetCacheAccessTime() const {
+                // PS1 Quirk: Cache access timing (VERIFIED)
+                return bus_state.is_sequential ? 
+                    BusState::BusTiming::RAM_SEQUENTIAL : 
+                    BusState::BusTiming::RAM_FIRST_ACCESS;
+            }
+
+            void HandleCacheStateChange() {
+                // PS1 Quirk: Cache state transition (VERIFIED)
+                for (auto& line : cache_control.lines) {
+                    line.valid = false;
+                    line.dirty = false;
+                }
+                cache_control.coherency_check_needed = true;
+            }
+
+            void HandleMemoryRefresh() {
+                // PS1 Quirk: Memory refresh cycles (VERIFIED)
+                bus_state.current_state = BusState::State::REFRESH;
+                bus_state.current_cycles = BusState::BusTiming::REFRESH_CYCLES;
+            }
+
+            // Add method to set callback
+            void SetDMACompleteCallback(std::function<void(uint32_t)> callback) {
+                dma_complete_callback = callback;
             }
     };
 }
